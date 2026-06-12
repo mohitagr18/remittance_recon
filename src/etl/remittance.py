@@ -1,0 +1,227 @@
+"""
+src/etl/remittance.py
+Parse the Remittance Report Master Excel file.
+
+Sheet: "Remittance Report Template"
+Row 0: metadata  ("Last uploaded remittance sheet is dated …")
+Row 1: blank
+Row 2: blank
+Row 3: HEADERS  ← header_row=3
+Row 4+: data
+
+22 actual columns (0-indexed):
+  0  Batch             float → int
+  1  Date              string date  → payment_date
+  2  Transaction       str
+  3  Match Status      str
+  4  Claim             float → str  (claim number)
+  5  Transaction Type  str
+  6  Charge            "$x,xxx.xx" string → float
+  7  Payment           "$x,xxx.xx" string → float
+  8  Allowed           "$x,xxx.xx" string → float
+  9  First Name        str  ALL CAPS
+  10 Last Name         str  ALL CAPS
+  11 First DOS         string date
+  12 Last DOS          string date
+  13 TCN               str  (unique claim key)
+  14 Billed Hrs        numeric
+  15 Paid Hrs          numeric
+  16 Hrs Remaining     numeric
+  17 Client            "LAST FIRST" (space, no comma)
+  18 Last Name, First  "LAST, FIRST" — our primary client name key
+  19 Month             "3/" partial
+  20 Insurance         actual payer name
+  21 Payment Value     numeric (= col 7 as float)
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+_SHEET = "Remittance Report Template"
+_HEADER_ROW = 3  # 0-indexed
+
+
+def parse_remittance(path: Path) -> list[dict]:
+    """
+    Returns a list of dicts (one per claim row), with TCN deduplication:
+    is_latest=True only for the record with the most-recent payment_date per TCN.
+    """
+    xl = pd.ExcelFile(path, engine="openpyxl")
+    if _SHEET not in xl.sheet_names:
+        raise ValueError(f"Sheet '{_SHEET}' not found in {path.name}")
+
+    # Read with header at row 3 (skip rows 0-2)
+    df = xl.parse(_SHEET, header=_HEADER_ROW, dtype=str)
+
+    # DuckDB-friendly column renaming: keep positional access
+    # (pandas will rename duplicate headers automatically, so we use iloc)
+    records = []
+    for _, row in df.iterrows():
+        vals = row.tolist()
+        if len(vals) < 14:
+            continue
+
+        tcn = _clean_str(_get(vals, 13))
+        if not tcn:
+            continue  # skip rows with no TCN
+
+        rec = {
+            "batch": _parse_int(_get(vals, 0)),
+            "payment_date": _parse_date(_get(vals, 1)),
+            "transaction": _clean_str(_get(vals, 2)),
+            "match_status": _clean_str(_get(vals, 3)),
+            "claim_number": _clean_str(_get(vals, 4)),
+            "transaction_type": _clean_str(_get(vals, 5)),
+            "charge_amount": _parse_dollar(_get(vals, 6)),
+            "payment_amount": _parse_dollar(_get(vals, 7)),
+            "allowed_amount": _parse_dollar(_get(vals, 8)),
+            "client_first_name": _clean_str(_get(vals, 9)),
+            "client_last_name": _clean_str(_get(vals, 10)),
+            "first_dos": _parse_date(_get(vals, 11)),
+            "last_dos": _parse_date(_get(vals, 12)),
+            "tcn": tcn,
+            "billed_hours": _parse_float(_get(vals, 14)),
+            "paid_hours": _parse_float(_get(vals, 15)),
+            "hours_remaining": _parse_float(_get(vals, 16)),
+            "client_name_combined": _clean_str(_get(vals, 18)),  # "LAST, FIRST"
+            "month_label": _clean_str(_get(vals, 19)),
+            "insurance": _clean_str(_get(vals, 20)),
+            "payment_value": _parse_float(_get(vals, 21)),
+            "source_file": path.name,
+            "is_latest": True,  # will be corrected below
+        }
+        records.append(rec)
+
+    records = _deduplicate_tcns(records)
+    return records
+
+
+def filter_by_dos_range(records: list[dict], start: date, end: date) -> list[dict]:
+    """
+    Return only records whose service dates (first_dos .. last_dos) overlap
+    the given week range.
+    A claim overlaps if first_dos <= end AND last_dos >= start.
+    """
+    out = []
+    for r in records:
+        fd = r.get("first_dos")
+        ld = r.get("last_dos")
+        if fd is None and ld is None:
+            continue
+        fd = fd or ld
+        ld = ld or fd
+        if fd <= end and ld >= start:
+            out.append(r)
+    return out
+
+
+def aggregate_remittance_hours(records: list[dict]) -> dict[str, dict]:
+    """
+    Group by client_name_combined → sum billed_hours and paid_hours (is_latest only).
+    Returns: { "LAST, FIRST": {"billed_hours": x, "paid_hours": y, "insurance": z} }
+    """
+    agg: dict[str, dict] = {}
+    for r in records:
+        if not r["is_latest"]:
+            continue
+        key = (r.get("client_name_combined") or "").strip().upper()
+        if not key:
+            continue
+        if key not in agg:
+            agg[key] = {
+                "client_name_combined": r.get("client_name_combined"),
+                "billed_hours": 0.0,
+                "paid_hours": 0.0,
+                "insurance": r.get("insurance"),
+            }
+        agg[key]["billed_hours"] = round(agg[key]["billed_hours"] + (r["billed_hours"] or 0), 4)
+        agg[key]["paid_hours"] = round(agg[key]["paid_hours"] + (r["paid_hours"] or 0), 4)
+    return agg
+
+
+# ─── Private helpers ──────────────────────────────────────────────────────────
+
+def _get(vals: list, idx: int) -> Any:
+    try:
+        return vals[idx]
+    except IndexError:
+        return None
+
+
+def _clean_str(val: Any) -> str | None:
+    if val is None:
+        return None
+    if isinstance(val, float) and pd.isna(val):
+        return None
+    s = str(val).strip()
+    return s if s and s.lower() not in ("nan", "none", "") else None
+
+
+def _parse_date(val: Any) -> date | None:
+    s = _clean_str(val)
+    if not s:
+        return None
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%m/%d/%y", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_dollar(val: Any) -> float | None:
+    s = _clean_str(val)
+    if not s:
+        return None
+    s = re.sub(r"[$,\s]", "", s)
+    if s.startswith("(") and s.endswith(")"):
+        s = "-" + s[1:-1]
+    try:
+        return round(float(s), 2)
+    except ValueError:
+        return None
+
+
+def _parse_float(val: Any) -> float | None:
+    s = _clean_str(val)
+    if not s:
+        return None
+    try:
+        return round(float(s), 4)
+    except ValueError:
+        return None
+
+
+def _parse_int(val: Any) -> int | None:
+    f = _parse_float(val)
+    return int(f) if f is not None else None
+
+
+def _deduplicate_tcns(records: list[dict]) -> list[dict]:
+    """
+    For each TCN, keep only the most-recent record as is_latest=True.
+    All older records for the same TCN are marked is_latest=False.
+    """
+    # Group by TCN, tracking max payment_date index
+    latest_idx: dict[str, int] = {}  # tcn → index of latest record
+    for i, r in enumerate(records):
+        tcn = r["tcn"]
+        if tcn not in latest_idx:
+            latest_idx[tcn] = i
+        else:
+            prev_date = records[latest_idx[tcn]]["payment_date"]
+            curr_date = r["payment_date"]
+            if curr_date and (prev_date is None or curr_date > prev_date):
+                latest_idx[tcn] = i
+
+    latest_set = set(latest_idx.values())
+    for i, r in enumerate(records):
+        r["is_latest"] = i in latest_set
+
+    return records

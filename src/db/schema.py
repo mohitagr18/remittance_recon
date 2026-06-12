@@ -1,0 +1,153 @@
+"""
+src/db/schema.py
+DuckDB schema — CREATE TABLE IF NOT EXISTS statements for all tables.
+Call create_all(conn) to initialise a fresh database.
+"""
+
+from __future__ import annotations
+
+import duckdb
+
+_DDL = """
+-- ── Reference Tables ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS name_match (
+    id         INTEGER PRIMARY KEY,
+    payroll_name    VARCHAR NOT NULL,
+    remittance_name VARCHAR,          -- NULL means the name maps to "Not Available"
+    is_active  BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS copay_clients (
+    id           INTEGER PRIMARY KEY,
+    client_name  VARCHAR NOT NULL,   -- payroll name (may include role suffix)
+    insurance    VARCHAR,
+    is_active    BOOLEAN DEFAULT TRUE,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS employees (
+    employee_id  VARCHAR PRIMARY KEY,
+    last_name    VARCHAR,
+    first_name   VARCHAR,
+    full_name    VARCHAR,            -- "Last, First"
+    status       VARCHAR            -- A = Active, T = Terminated
+);
+
+-- ── Fact Tables ───────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS payroll (
+    id                     INTEGER PRIMARY KEY,
+    week_start_date        DATE NOT NULL,
+    week_end_date          DATE NOT NULL,
+    paycheck_date          DATE NOT NULL,
+    client_name_raw        VARCHAR NOT NULL,
+    insurance              VARCHAR,
+    employee_name          VARCHAR,
+    employee_id            VARCHAR,
+    regular_hours          DECIMAL(10,2),
+    respite_hours          DECIMAL(10,2),
+    total_hours            DECIMAL(10,2),
+    source_file            VARCHAR,
+    loaded_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS remittance (
+    id                  INTEGER PRIMARY KEY,
+    batch               INTEGER,
+    payment_date        DATE,
+    transaction         VARCHAR,
+    match_status        VARCHAR,
+    claim_number        VARCHAR,
+    transaction_type    VARCHAR,
+    charge_amount       DECIMAL(12,2),
+    payment_amount      DECIMAL(12,2),
+    allowed_amount      DECIMAL(12,2),
+    client_first_name   VARCHAR,
+    client_last_name    VARCHAR,
+    client_name_combined VARCHAR,   -- "LAST, FIRST" (col 18)
+    first_dos           DATE,
+    last_dos            DATE,
+    tcn                 VARCHAR NOT NULL,
+    billed_hours        DECIMAL(10,2),
+    paid_hours          DECIMAL(10,2),
+    hours_remaining     DECIMAL(10,2),
+    insurance           VARCHAR,    -- col 20
+    payment_value       DECIMAL(12,2),
+    month_label         VARCHAR,
+    source_file         VARCHAR,
+    loaded_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_latest           BOOLEAN DEFAULT TRUE
+);
+
+-- ── Golden Record ─────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS reconciliation (
+    id                      INTEGER PRIMARY KEY,
+    week_start_date         DATE NOT NULL,
+    week_end_date           DATE NOT NULL,
+    paycheck_date           DATE,
+    insurance               VARCHAR,
+    client_name_payroll     VARCHAR,
+    client_name_remittance  VARCHAR,
+    payroll_hours           DECIMAL(10,2) DEFAULT 0,
+    billed_hours            DECIMAL(10,2) DEFAULT 0,
+    paid_hours              DECIMAL(10,2) DEFAULT 0,
+    payroll_vs_billed       DECIMAL(10,2),
+    billing_vs_paid         DECIMAL(10,2),
+    payroll_vs_paid         DECIMAL(10,2),
+    result_simple           VARCHAR,    -- Good | Follow up | No Payroll Hours
+    result_detailed         VARCHAR,    -- Not Billed | Billed Short | Paid Less | etc.
+    is_copay_client         BOOLEAN DEFAULT FALSE,
+    match_status            VARCHAR DEFAULT 'MATCHED', -- MATCHED | UNMATCHED | NOT_AVAILABLE
+    analyst_override        VARCHAR,    -- YN Good, UD Good if carried from source
+    yash_comments           TEXT,
+    connie_comments         TEXT,
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ── Analyst Workflow ──────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS rebill_tracker (
+    id                  INTEGER PRIMARY KEY,
+    reconciliation_id   INTEGER REFERENCES reconciliation(id),
+    tcn                 VARCHAR,
+    denial_code         VARCHAR,
+    rebill_date         DATE,
+    status              VARCHAR DEFAULT 'PENDING',  -- PENDING|SUBMITTED|PAID|DENIED
+    notes               TEXT,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS review_actions (
+    id                INTEGER PRIMARY KEY,
+    reconciliation_id INTEGER REFERENCES reconciliation(id),
+    action            VARCHAR,       -- MARK_REVIEWED | SEND_TO_REBILL
+    performed_by      VARCHAR,
+    performed_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    notes             TEXT
+);
+
+-- ── Sequences ─────────────────────────────────────────────────────────────────
+CREATE SEQUENCE IF NOT EXISTS seq_name_match      START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_copay_clients   START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_employees       START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_payroll         START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_remittance      START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_reconciliation  START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_rebill_tracker  START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_review_actions  START 1;
+"""
+
+
+def create_all(conn: duckdb.DuckDBPyConnection) -> None:
+    """Run all DDL statements against an open connection."""
+    for stmt in _DDL.split(";"):
+        stmt = stmt.strip()
+        if stmt:
+            conn.execute(stmt)
+    conn.commit()
