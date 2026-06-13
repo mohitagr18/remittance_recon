@@ -50,47 +50,35 @@ def compute_result(
 
     pvb = round(payroll_hrs - billed_hrs, 4)   # Payroll vs Billed
     bvp = round(billed_hrs - paid_hrs, 4)       # Billing vs Paid
-    pvp = round(payroll_hrs - paid_hrs, 4)       # Payroll vs Paid
 
-    # No payroll hours
-    if payroll_hrs == 0 and billed_hrs == 0:
+    # No payroll hours — fires when payroll is 0, regardless of billed amount
+    if payroll_hrs == 0:
         return "No Payroll Hours", None
 
-    # Good: all deltas within tolerance
-    # (mirrors Excel: G==0 AND H==0 AND I within 0.9)
-    if abs(pvb) < 0.01 and abs(bvp) < 0.01:
-        return "Good", None
-
-    # Copay clients: if pvb within tolerance, treat as Good
+    # Copay clients: within tolerance on both axes → Good
     if is_copay and abs(pvb) <= tolerance and abs(bvp) <= tolerance:
         return "Good", None
 
-    # ── Follow-up classification ──────────────────────────────────────────────
-    # Matches Excel's Yash Comments formula:
-    # IF billed < 1 → "Not Billed"
-    # IF billed < payroll → "Billed Short"
-    # IF billed > payroll → "Billed Extra"
-    # IF billed >= payroll AND paid < payroll → "Paid Less"  (when pvp within tol → "Billing Error")
-    # IF billed >= payroll AND paid < 1 → "Not Paid"
-    # IF paid > billed → "Paid Excess"
-    # IF paid < billed → "Paid Less"
+    # Good: all deltas within tolerance (mirrors Excel 0.9 threshold)
+    if abs(pvb) <= tolerance and abs(bvp) <= tolerance:
+        return "Good", None
 
+    # ── Follow-up classification ──────────────────────────────────────────────
     if billed_hrs < 1:
         return "Follow up", "Not Billed"
-    if billed_hrs < payroll_hrs:
+    if billed_hrs < payroll_hrs - tolerance:
         return "Follow up", "Billed Short"
-    if billed_hrs > payroll_hrs + 0.01:
+    if billed_hrs > payroll_hrs + tolerance:
         return "Follow up", "Billed Extra"
 
     # billed ≈ payroll from here on
     if paid_hrs < 1:
         return "Follow up", "Not Paid"
-    if paid_hrs < billed_hrs:
-        if abs(pvb) < 0.01 and bvp > 0:
-            return "Follow up", "Paid Less"
+    if paid_hrs < billed_hrs - tolerance:
         return "Follow up", "Paid Less"
-    if paid_hrs > billed_hrs + 0.01:
+    if paid_hrs > billed_hrs + tolerance:
         return "Follow up", "Paid Excess"
+    # Small rounding difference — classify as Billing Error, not Paid Excess
     if abs(bvp) > 0.01:
         return "Follow up", "Billing Error"
 

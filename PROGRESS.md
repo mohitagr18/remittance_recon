@@ -2,7 +2,14 @@
 
 ## Status: IN PROGRESS
 
-## Current Phase: Step 1 — ETL Pipeline (COMPLETE, moving to Step 3)
+## Current Phase: Step 3 — Streamlit UI (built, under review)
+
+## UI Bug Fix Log
+- [x] Fix: `followup_donut` chart crashed with duplicate `legend` keyword argument → excluded `legend`/`margin` from `_LAYOUT_DEFAULTS` spread
+- [x] Fix: `st.plotly_chart` deprecation warning (`use_container_width`) → replaced with `width='stretch'` in app.py and Client Ledger page
+- [x] Fix: Sidebar nav text invisible (dark text on dark bg) → added `.streamlit/config.toml` to force dark theme + rewrote CSS to force `color: #c8cfe0` on all sidebar links
+- [x] Fix: Chart backgrounds rendering white on dark page → set `paper_bgcolor` and `plot_bgcolor` to `#1e2130` (dark card color)
+- [x] Fix: Chart axis/tick labels barely visible → set explicit `tickfont.color` and `linecolor` on all axes
 
 ## Checklist
 - [x] Step 0a: Project plan created and approved
@@ -22,20 +29,21 @@
 ### Step 2: Query Layer ✅
 - [x] Step 2a: Query layer built (src/db/queries.py — 20+ query functions)
 
-### Step 3: Streamlit UI
-- [ ] Step 3a: COO Dashboard screen built
-- [ ] Step 3b: Client Ledger screen built
-- [ ] Step 3c: Analyst Workbench screen built
-- [ ] Step 3d: Settings / Name Match Manager screen built
+### Step 3: Streamlit UI ✅
+- [x] Step 3a: COO Dashboard screen built (src/ui/app.py)
+- [x] Step 3b: Client Ledger screen built (src/ui/pages/1_Client_Ledger.py)
+- [x] Step 3c: Analyst Workbench screen built (src/ui/pages/2_Analyst_Workbench.py)
+- [x] Step 3d: Settings / Name Match Manager screen built (src/ui/pages/3_Name_Match_Manager.py)
 - [ ] Step 3e: UI approved by user
 
-### Step 4: AI Chat Layer
-- [ ] Step 4a: AI chat layer built
-- [ ] Step 4b: AI chat tested with 5 sample questions
-- [ ] Step 4c: AI chat approved by user
+### Step 4: AI Chat Layer ✅
+- [x] Step 4a: AI chat layer built (src/ai/chat.py + src/ai/prompts.py)
+- [x] Step 4b: AI chat page built (src/ui/pages/4_AI_Chat.py)
+- [ ] Step 4c: AI chat tested with 5 sample questions
+- [ ] Step 4d: AI chat approved by user
 
-### Tests
-- [ ] Test suite written and passing (pytest)
+### Tests ✅
+- [x] Test suite written and passing (71 tests, pytest)
 
 ## Pipeline Run Results (2026-02-18 to 2026-02-24)
 - Payroll: 282 aide-client pairs → 158 unique clients
@@ -79,4 +87,9 @@ week range with payment_date=2026-05-22 — the Excel was created before this cl
 - Remittance Design.docx not yet read for UI requirements
 
 ## Next Action
-Read Remittance Design.docx for UI requirements, then begin Streamlit UI (Step 3)
+Open http://localhost:8501 in browser to review the UI. Run the ETL pipeline if not already done:
+```bash
+python -m src.etl.pipeline
+streamlit run src/ui/app.py
+```
+Approve UI (Step 3e), then test AI chat with 5 sample questions (requires OPENAI_API_KEY or GOOGLE_API_KEY in .env).

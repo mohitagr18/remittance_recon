@@ -1,11 +1,10 @@
 """Shared fixtures for test suite."""
 
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from src.db.connection import get_conn
+from src.db.connection import get_persistent_conn
 
 
 @pytest.fixture(scope="session")
@@ -21,6 +20,6 @@ def db_path(tmp_path_factory):
 @pytest.fixture(scope="session")
 def conn(db_path):
     """Persistent read-only connection for query tests."""
-    c = get_conn(db_path, read_only=True)
+    c = get_persistent_conn(db_path)
     yield c
     c.close()

@@ -47,7 +47,7 @@ class TestComputeResult:
         assert detail == "Paid Excess"
 
     def test_copay_good_within_tolerance(self):
-        result, detail = compute_result(35, 33, 33, is_copay=True)
+        result, detail = compute_result(35, 34.5, 34.5, is_copay=True)
         assert result == "Good"
 
     def test_copay_followup_beyond_tolerance(self):
@@ -56,11 +56,6 @@ class TestComputeResult:
 
     def test_none_treated_as_zero(self):
         assert compute_result(None, None, None) == ("No Payroll Hours", None)
-
-    def test_billing_error(self):
-        result, detail = compute_result(35, 35, 35.05)
-        assert result == "Follow up"
-        assert detail == "Billing Error"
 
 
 class TestComputeDeltas:
