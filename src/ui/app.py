@@ -8,14 +8,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Ensure project root is on PYTHONPATH when running via streamlit
 _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import streamlit as st
+import pandas as pd
 
-# ── Page config (must be first Streamlit call) ─────────────────────────────
 st.set_page_config(
     page_title="Recon Dashboard",
     page_icon="💰",
@@ -32,7 +31,7 @@ from src.db import queries
 
 inject_css()
 
-# ── Sidebar nav hint ───────────────────────────────────────────────────────
+# ── Sidebar ────────────────────────────────────────────────────────────────
 st.sidebar.markdown(
     """
     <div style='padding:16px 0 8px;'>
@@ -43,10 +42,8 @@ st.sidebar.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-# ── Filters ────────────────────────────────────────────────────────────────
 st.sidebar.markdown("**Filters**")
-week = week_filter("dash_week")
+week      = week_filter("dash_week")
 insurance = insurance_filter("dash_ins")
 
 # ── Page header ────────────────────────────────────────────────────────────
@@ -72,77 +69,92 @@ summary = queries.weekly_summary(conn, week_start=week, insurance=insurance)
 if summary.empty or summary.iloc[0]["total_clients"] == 0:
     st.info("⚡ No reconciliation data loaded yet. Run the ETL pipeline first.", icon="ℹ️")
     st.code("python -m src.etl.pipeline", language="bash")
+    st.stop()
+
+row            = summary.iloc[0]
+total_clients  = int(row.get("total_clients", 0) or 0)
+billed_hrs     = float(row.get("total_billed_hrs", 0) or 0)
+paid_hrs       = float(row.get("total_paid_hrs", 0) or 0)
+pending_hrs    = float(row.get("pending_hrs", 0) or 0)
+followup_count = int(row.get("followup_count", 0) or 0)
+rate           = float(row.get("collection_rate_pct", 0) or 0)
+
+render_kpi_row([
+    {"label": "Total Clients",   "value": f"{total_clients:,}",  "sub": "in reconciliation",  "color": "blue"},
+    {"label": "Billed Hours",    "value": f"{billed_hrs:,.1f}",  "sub": "hrs submitted",       "color": "purple"},
+    {"label": "Paid Hours",      "value": f"{paid_hrs:,.1f}",    "sub": "hrs collected",       "color": "green"},
+    {"label": "Pending Hours",   "value": f"{pending_hrs:,.1f}", "sub": "billed − paid",       "color": "yellow"},
+    {"label": "Follow-Ups",      "value": str(followup_count),   "sub": "need attention",      "color": "red"},
+    {"label": "Collection Rate", "value": f"{rate:.1f}%",        "sub": "target ≥ 95%",        "color": "green" if rate >= 95 else "red"},
+])
+
+st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+
+# ── Row 1: Rolling trend + Follow-up donut ─────────────────────────────────
+col_left, col_right = st.columns([3, 2], gap="large")
+
+with col_left:
+    st.markdown(
+        "<div class='section-header'><h3>📈 12-Week Rolling Trend</h3></div>",
+        unsafe_allow_html=True,
+    )
+    trend_df = queries.rolling_trend(conn, weeks=12, insurance=insurance)
+    st.plotly_chart(rolling_trend_chart(trend_df), width="stretch", config={"displayModeBar": False})
+
+with col_right:
+    st.markdown(
+        "<div class='section-header'><h3>🔍 Follow-Up Breakdown</h3></div>",
+        unsafe_allow_html=True,
+    )
+    reason_df = queries.followup_reason_breakdown(conn, week_start=week, insurance=insurance)
+    st.plotly_chart(followup_donut(reason_df), width="stretch", config={"displayModeBar": False})
+
+# ── Row 2: Top Follow-Up Clients (deduplicated) ────────────────────────────
+st.markdown(
+    "<div class='section-header'><h3>⚠️ Top Follow-Up Clients</h3></div>",
+    unsafe_allow_html=True,
+)
+
+top_fu = queries.top_followup_clients(conn, week_start=week, insurance=insurance, limit=15)
+
+if top_fu.empty:
+    st.success("✅ No follow-ups for the selected filters!", icon="✅")
 else:
-    row = summary.iloc[0]
-    total_clients  = int(row.get("total_clients", 0) or 0)
-    billed_hrs     = float(row.get("total_billed_hrs", 0) or 0)
-    paid_hrs       = float(row.get("total_paid_hrs", 0) or 0)
-    pending_hrs    = float(row.get("pending_hrs", 0) or 0)
-    followup_count = int(row.get("followup_count", 0) or 0)
-    rate           = float(row.get("collection_rate_pct", 0) or 0)
-
-    render_kpi_row([
-        {"label": "Total Clients",     "value": f"{total_clients:,}",        "sub": "in reconciliation",        "color": "blue"},
-        {"label": "Billed Hours",      "value": f"{billed_hrs:,.1f}",        "sub": "hrs submitted",            "color": "purple"},
-        {"label": "Paid Hours",        "value": f"{paid_hrs:,.1f}",          "sub": "hrs collected",            "color": "green"},
-        {"label": "Follow-Ups",        "value": str(followup_count),         "sub": "need attention",           "color": "yellow"},
-        {"label": "Collection Rate",   "value": f"{rate:.1f}%",              "sub": "target ≥ 95%",             "color": "green" if rate >= 95 else "red"},
-    ])
-
-    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-
-    # ── Charts row 1: rolling trend + donut ───────────────────────────────
-    col_left, col_right = st.columns([3, 2], gap="large")
-
-    with col_left:
-        st.markdown(
-            "<div class='section-header'><h3>📈 12-Week Rolling Trend</h3></div>",
-            unsafe_allow_html=True,
-        )
-        trend_df = queries.rolling_trend(conn, weeks=12, insurance=insurance)
-        st.plotly_chart(rolling_trend_chart(trend_df), width="stretch", config={"displayModeBar": False})
-
-    with col_right:
-        st.markdown(
-            "<div class='section-header'><h3>🔍 Follow-Up Breakdown</h3></div>",
-            unsafe_allow_html=True,
-        )
-        reason_df = queries.followup_reason_breakdown(conn, week_start=week, insurance=insurance)
-        st.plotly_chart(followup_donut(reason_df), width="stretch", config={"displayModeBar": False})
-
-    # ── Charts row 2: payer bars ──────────────────────────────────────────
-    st.markdown(
-        "<div class='section-header'><h3>🏥 Payer Collection Rates</h3></div>",
-        unsafe_allow_html=True,
+    # Build a formatted display dataframe
+    display = top_fu.copy()
+    display["date_range"] = (
+        pd.to_datetime(display["week_start"]).dt.strftime("%b %d")
+        + " – "
+        + pd.to_datetime(display["week_end"]).dt.strftime("%b %d, %Y")
     )
-    payer_df = queries.payer_collection_rates(conn, week_start=week)
-    st.plotly_chart(payer_bar_chart(payer_df), width="stretch", config={"displayModeBar": False})
 
-    # ── Top open-balance table ────────────────────────────────────────────
-    st.markdown(
-        "<div class='section-header'><h3>⚠️ Top Follow-Up Clients</h3></div>",
-        unsafe_allow_html=True,
+    show_cols = ["insurance", "client", "date_range",
+                 "payroll_hours", "billed_hours", "paid_hours",
+                 "pending_hrs", "payroll_vs_billed", "reason"]
+    show_cols = [c for c in show_cols if c in display.columns]
+
+    st.caption(f"Showing top {len(display)} follow-up clients · 1 row per client · sorted by pending hrs ↓")
+    st.dataframe(
+        display[show_cols],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "insurance":         st.column_config.TextColumn("Insurance",     width="small"),
+            "client":            st.column_config.TextColumn("Client",        width="medium"),
+            "date_range":        st.column_config.TextColumn("Week",          width="medium"),
+            "payroll_hours":     st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
+            "billed_hours":      st.column_config.NumberColumn("Billed Hrs",  format="%.1f"),
+            "paid_hours":        st.column_config.NumberColumn("Paid Hrs",    format="%.1f"),
+            "pending_hrs":       st.column_config.NumberColumn("⏳ Pending",  format="%.1f"),
+            "payroll_vs_billed": st.column_config.NumberColumn("PvB Δ",       format="%.1f"),
+            "reason":            st.column_config.TextColumn("Reason",        width="medium"),
+        },
     )
-    followups = queries.followup_items(conn, week_start=week, insurance=insurance)
-    if followups.empty:
-        st.success("✅ No follow-ups for the selected filters!", icon="✅")
-    else:
-        display_cols = [
-            "insurance", "client_name_payroll", "payroll_hours",
-            "billed_hours", "paid_hours", "payroll_vs_billed", "result_detailed",
-        ]
-        display_cols = [c for c in display_cols if c in followups.columns]
-        st.dataframe(
-            followups[display_cols].head(20),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "insurance":          st.column_config.TextColumn("Insurance", width="small"),
-                "client_name_payroll":st.column_config.TextColumn("Client", width="medium"),
-                "payroll_hours":      st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
-                "billed_hours":       st.column_config.NumberColumn("Billed Hrs",  format="%.1f"),
-                "paid_hours":         st.column_config.NumberColumn("Paid Hrs",    format="%.1f"),
-                "payroll_vs_billed":  st.column_config.NumberColumn("PvB Δ",       format="%.1f"),
-                "result_detailed":    st.column_config.TextColumn("Reason", width="medium"),
-            },
-        )
+
+# ── Row 3: Payer Collection Rates ──────────────────────────────────────────
+st.markdown(
+    "<div class='section-header'><h3>🏥 Payer Collection Rates</h3></div>",
+    unsafe_allow_html=True,
+)
+payer_df = queries.payer_collection_rates(conn, week_start=week)
+st.plotly_chart(payer_bar_chart(payer_df), width="stretch", config={"displayModeBar": False})

@@ -7,9 +7,15 @@
 ## UI Bug Fix Log
 - [x] Fix: `followup_donut` chart crashed with duplicate `legend` keyword argument → excluded `legend`/`margin` from `_LAYOUT_DEFAULTS` spread
 - [x] Fix: `st.plotly_chart` deprecation warning (`use_container_width`) → replaced with `width='stretch'` in app.py and Client Ledger page
-- [x] Fix: Sidebar nav text invisible (dark text on dark bg) → added `.streamlit/config.toml` to force dark theme + rewrote CSS to force `color: #c8cfe0` on all sidebar links
+- [x] Fix: Sidebar nav text invisible (dark text on dark bg) → added `.streamlit/config.toml` to force dark theme + rewrote CSS with `!important` overrides on all sidebar links
 - [x] Fix: Chart backgrounds rendering white on dark page → set `paper_bgcolor` and `plot_bgcolor` to `#1e2130` (dark card color)
-- [x] Fix: Chart axis/tick labels barely visible → set explicit `tickfont.color` and `linecolor` on all axes
+- [x] Fix: Chart axis/tick labels barely visible → set explicit `tickfont.color` and `linecolor` on all chart axes
+- [x] Verified: Dark theme confirmed via browser screenshot — sidebar readable, charts dark, KPI cards visible
+- [x] Feature: COO Dashboard reordered — Top Follow-Up Clients moved above Payer Collection Rates
+- [x] Feature: Top Follow-Up Clients table deduplicated — 1 row per client, shows date range, pending hrs, sorted by pending ↓ (new `top_followup_clients` query)
+- [x] Feature: Added `weekly_recon_detail` query — Excel-style view, one row per client, all hours columns, sorted by pending ↓
+- [x] Feature: New page `0_Weekly_Recon.py` — period summary bar (totals), full client table with Payroll/Billed/Paid/Pending/PvB Δ, Follow-Up Only toggle, totals footer
+- [x] Feature: KPI cards updated — added Pending Hours card, sidebar order improved
 
 ## Checklist
 - [x] Step 0a: Project plan created and approved

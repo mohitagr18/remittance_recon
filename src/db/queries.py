@@ -74,6 +74,103 @@ def followup_items(
     return conn.execute(sql).df()
 
 
+def top_followup_clients(
+    conn: duckdb.DuckDBPyConnection,
+    week_start: str | None = None,
+    insurance: str | None = None,
+    limit: int = 15,
+):
+    """
+    Deduplicated follow-up clients for the COO dashboard.
+    One row per client (worst-case week chosen by max pending hours).
+    Includes date range and pending hours. Sorted by pending_hrs descending.
+    """
+    week_clause = f"AND week_start_date = '{week_start}'" if week_start else ""
+    ins_clause  = f"AND insurance = '{insurance}'"        if insurance  else ""
+    sql = f"""
+        WITH ranked AS (
+            SELECT
+                insurance,
+                client_name_payroll,
+                week_start_date,
+                week_end_date,
+                payroll_hours,
+                billed_hours,
+                paid_hours,
+                ROUND(billed_hours - paid_hours, 1)    AS pending_hrs,
+                ROUND(payroll_hours - billed_hours, 1) AS payroll_vs_billed,
+                result_detailed,
+                ROW_NUMBER() OVER (
+                    PARTITION BY client_name_payroll
+                    ORDER BY (billed_hours - paid_hours) DESC
+                ) AS rn
+            FROM reconciliation
+            WHERE result_simple = 'Follow up'
+              {week_clause}
+              {ins_clause}
+        )
+        SELECT
+            insurance,
+            client_name_payroll                     AS client,
+            week_start_date                         AS week_start,
+            week_end_date                           AS week_end,
+            payroll_hours,
+            billed_hours,
+            paid_hours,
+            pending_hrs,
+            payroll_vs_billed,
+            result_detailed                         AS reason
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY pending_hrs DESC
+        LIMIT {limit}
+    """
+    return conn.execute(sql).df()
+
+
+def weekly_recon_detail(
+    conn: duckdb.DuckDBPyConnection,
+    week_start: str | None = None,
+    insurance: str | None = None,
+    follow_up_only: bool = False,
+):
+    """
+    Excel-style weekly reconciliation view — one row per client.
+    Columns: Insurance | Client | Week | Payroll Hrs | Billed Hrs |
+             Paid Hrs | Pending Hrs | Status | Reason
+    Sorted by pending_hrs descending (largest shortfall first).
+    """
+    clauses = []
+    if week_start:
+        clauses.append(f"week_start_date = '{week_start}'")
+    if insurance:
+        clauses.append(f"insurance = '{insurance}'")
+    if follow_up_only:
+        clauses.append("result_simple = 'Follow up'")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = f"""
+        SELECT
+            insurance,
+            client_name_payroll                        AS client,
+            week_start_date                            AS week_start,
+            week_end_date                              AS week_end,
+            payroll_hours,
+            billed_hours,
+            paid_hours,
+            ROUND(billed_hours - paid_hours, 1)        AS pending_hrs,
+            ROUND(payroll_hours - billed_hours, 1)     AS payroll_vs_billed,
+            ROUND(payroll_hours - paid_hours, 1)       AS payroll_vs_paid,
+            result_simple                              AS status,
+            result_detailed                            AS reason,
+            is_copay_client,
+            yash_comments,
+            connie_comments
+        FROM reconciliation
+        {where}
+        ORDER BY pending_hrs DESC, ABS(payroll_vs_billed) DESC
+    """
+    return conn.execute(sql).df()
+
 # ── All Reconciliation Rows ───────────────────────────────────────────────────
 
 def all_reconciliation(
