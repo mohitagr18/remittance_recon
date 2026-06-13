@@ -14,7 +14,7 @@ class TestQueries:
         assert len(df) > 0
 
     def test_all_reconciliation(self, conn):
-        df = q.all_reconciliation(conn)
+        df = q.all_reconciliation(conn, week_start="2026-02-18")
         assert len(df) == 158
 
     def test_followup_reason_breakdown(self, conn):

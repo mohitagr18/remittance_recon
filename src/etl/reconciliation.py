@@ -68,8 +68,6 @@ def compute_result(
         return "Follow up", "Not Billed"
     if billed_hrs < payroll_hrs - tolerance:
         return "Follow up", "Billed Short"
-    if billed_hrs > payroll_hrs + tolerance:
-        return "Follow up", "Billed Extra"
 
     # billed ≈ payroll from here on
     if paid_hrs < 1:

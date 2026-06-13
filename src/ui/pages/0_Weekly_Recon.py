@@ -144,7 +144,7 @@ show_cols = [
 show_cols = [c for c in show_cols if c in display.columns]
 
 # ── Status colour indicator column ─────────────────────────────────────────
-STATUS_ICON = {"Good": "✅", "Follow up": "⚠️", "No Payroll Hours": "⬜"}
+STATUS_ICON = {"Good": "✅", "Follow up": "⚠️", "No Payroll Hours": "⬜", "No Payroll Data": "⬜"}
 display["status"] = display["status"].map(lambda s: f"{STATUS_ICON.get(s, '')} {s}" if isinstance(s, str) else s)
 
 # ── Render table ────────────────────────────────────────────────────────────

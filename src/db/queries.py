@@ -11,12 +11,19 @@ import duckdb
 
 # ── Weekly Summary ────────────────────────────────────────────────────────────
 
-def weekly_summary(conn: duckdb.DuckDBPyConnection, week_start: str | None = None, insurance: str | None = None):
+def weekly_summary(
+    conn: duckdb.DuckDBPyConnection,
+    week_start: str | None = None,
+    insurance: str | None = None,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
     """KPI totals for the dashboard header cards."""
-    filters = _week_insurance_filter(week_start, insurance)
+    filters = _week_insurance_filter(week_start, insurance, care_type=care_type, start_date=start_date, end_date=end_date)
     sql = f"""
         SELECT
-            COUNT(*)                                                            AS total_clients,
+            COUNT(DISTINCT COALESCE(client_name_payroll, client_name_remittance)) AS total_clients,
             SUM(payroll_hours)                                                  AS total_payroll_hrs,
             SUM(billed_hours)                                                   AS total_billed_hrs,
             SUM(paid_hours)                                                     AS total_paid_hrs,
@@ -38,15 +45,25 @@ def followup_items(
     week_start: str | None = None,
     insurance: str | None = None,
     reason: str | None = None,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
     """All follow-up rows with detail reason, sorted by payroll_vs_billed desc."""
     clauses = ["result_simple = 'Follow up'"]
     if week_start:
         clauses.append(f"week_start_date = '{week_start}'")
+    else:
+        if start_date:
+            clauses.append(f"week_start_date >= '{start_date}'")
+        if end_date:
+            clauses.append(f"week_start_date <= '{end_date}'")
     if insurance:
         clauses.append(f"insurance = '{insurance}'")
     if reason:
         clauses.append(f"result_detailed = '{reason}'")
+    if care_type:
+        clauses.append(f"care_type = '{care_type}'")
     where = "WHERE " + " AND ".join(clauses)
     sql = f"""
         SELECT
@@ -79,14 +96,26 @@ def top_followup_clients(
     week_start: str | None = None,
     insurance: str | None = None,
     limit: int = 15,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
     """
     Deduplicated follow-up clients for the COO dashboard.
     One row per client (worst-case week chosen by max pending hours).
     Includes date range and pending hours. Sorted by pending_hrs descending.
     """
-    week_clause = f"AND week_start_date = '{week_start}'" if week_start else ""
+    if week_start:
+        date_clause = f"AND week_start_date = '{week_start}'"
+    else:
+        date_clause = ""
+        if start_date:
+            date_clause += f" AND week_start_date >= '{start_date}'"
+        if end_date:
+            date_clause += f" AND week_start_date <= '{end_date}'"
+            
     ins_clause  = f"AND insurance = '{insurance}'"        if insurance  else ""
+    care_clause = f"AND care_type = '{care_type}'"        if care_type  else ""
     sql = f"""
         WITH ranked AS (
             SELECT
@@ -106,8 +135,9 @@ def top_followup_clients(
                 ) AS rn
             FROM reconciliation
             WHERE result_simple = 'Follow up'
-              {week_clause}
+              {date_clause}
               {ins_clause}
+              {care_clause}
         )
         SELECT
             insurance,
@@ -133,6 +163,9 @@ def weekly_recon_detail(
     week_start: str | None = None,
     insurance: str | None = None,
     follow_up_only: bool = False,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
     """
     Excel-style weekly reconciliation view — one row per client.
@@ -143,10 +176,17 @@ def weekly_recon_detail(
     clauses = []
     if week_start:
         clauses.append(f"week_start_date = '{week_start}'")
+    else:
+        if start_date:
+            clauses.append(f"week_start_date >= '{start_date}'")
+        if end_date:
+            clauses.append(f"week_start_date <= '{end_date}'")
     if insurance:
         clauses.append(f"insurance = '{insurance}'")
     if follow_up_only:
         clauses.append("result_simple = 'Follow up'")
+    if care_type:
+        clauses.append(f"care_type = '{care_type}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
         SELECT
@@ -178,14 +218,24 @@ def all_reconciliation(
     week_start: str | None = None,
     insurance: str | None = None,
     follow_up_only: bool = False,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
     clauses = []
     if week_start:
         clauses.append(f"week_start_date = '{week_start}'")
+    else:
+        if start_date:
+            clauses.append(f"week_start_date >= '{start_date}'")
+        if end_date:
+            clauses.append(f"week_start_date <= '{end_date}'")
     if insurance:
         clauses.append(f"insurance = '{insurance}'")
     if follow_up_only:
         clauses.append("result_simple = 'Follow up'")
+    if care_type:
+        clauses.append(f"care_type = '{care_type}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
         SELECT
@@ -221,8 +271,11 @@ def followup_reason_breakdown(
     conn: duckdb.DuckDBPyConnection,
     week_start: str | None = None,
     insurance: str | None = None,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
-    filters = _week_insurance_filter(week_start, insurance, prefix="AND")
+    filters = _week_insurance_filter(week_start, insurance, care_type=care_type, start_date=start_date, end_date=end_date, prefix="AND")
     sql = f"""
         SELECT
             COALESCE(result_detailed, 'Unclassified') AS reason,
@@ -241,8 +294,20 @@ def followup_reason_breakdown(
 def payer_collection_rates(
     conn: duckdb.DuckDBPyConnection,
     week_start: str | None = None,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
-    week_filter = f"AND week_start_date = '{week_start}'" if week_start else ""
+    if week_start:
+        week_filter = f"AND week_start_date = '{week_start}'"
+    else:
+        week_filter = ""
+        if start_date:
+            week_filter += f" AND week_start_date >= '{start_date}'"
+        if end_date:
+            week_filter += f" AND week_start_date <= '{end_date}'"
+            
+    care_filter = f"AND care_type = '{care_type}'" if care_type else ""
     sql = f"""
         SELECT
             insurance,
@@ -253,6 +318,7 @@ def payer_collection_rates(
         FROM reconciliation
         WHERE insurance IS NOT NULL
         {week_filter}
+        {care_filter}
         GROUP BY insurance
         ORDER BY collection_rate_pct DESC
     """
@@ -261,8 +327,23 @@ def payer_collection_rates(
 
 # ── 12-Week Rolling Trend ─────────────────────────────────────────────────────
 
-def rolling_trend(conn: duckdb.DuckDBPyConnection, weeks: int = 12, insurance: str | None = None):
+def rolling_trend(
+    conn: duckdb.DuckDBPyConnection,
+    weeks: int = 12,
+    insurance: str | None = None,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
     ins_filter = f"AND insurance = '{insurance}'" if insurance else ""
+    care_filter = f"AND care_type = '{care_type}'" if care_type else ""
+    
+    date_filter = ""
+    if start_date:
+        date_filter += f" AND week_start_date >= '{start_date}'"
+    if end_date:
+        date_filter += f" AND week_start_date <= '{end_date}'"
+        
     sql = f"""
         SELECT
             week_start_date,
@@ -271,7 +352,7 @@ def rolling_trend(conn: duckdb.DuckDBPyConnection, weeks: int = 12, insurance: s
             SUM(billed_hours - paid_hours) AS pending_hrs,
             COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_count
         FROM reconciliation
-        WHERE 1=1 {ins_filter}
+        WHERE 1=1 {ins_filter} {care_filter} {date_filter}
         GROUP BY week_start_date
         ORDER BY week_start_date DESC
         LIMIT {weeks}
@@ -445,16 +526,37 @@ def mark_reviewed(conn: duckdb.DuckDBPyConnection, reconciliation_id: int, perfo
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def ingested_files_list(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """Return list of all ingested files."""
+    sql = """
+        SELECT filename, file_type, row_count, week_start, week_end, ingested_at, file_hash
+        FROM ingested_files
+        ORDER BY ingested_at DESC
+    """
+    return conn.execute(sql).df()
+
+
 def _week_insurance_filter(
     week_start: str | None,
     insurance: str | None,
+    care_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     prefix: str = "WHERE",
 ) -> str:
     clauses = []
     if week_start:
         clauses.append(f"week_start_date = '{week_start}'")
+    else:
+        if start_date:
+            clauses.append(f"week_start_date >= '{start_date}'")
+        if end_date:
+            clauses.append(f"week_start_date <= '{end_date}'")
+            
     if insurance:
         clauses.append(f"insurance = '{insurance}'")
+    if care_type:
+        clauses.append(f"care_type = '{care_type}'")
     if not clauses:
         return ""
     return prefix + " " + " AND ".join(clauses)

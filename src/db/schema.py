@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS payroll (
     respite_hours          DECIMAL(10,2),
     total_hours            DECIMAL(10,2),
     source_file            VARCHAR,
-    loaded_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    loaded_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (week_start_date, client_name_raw, employee_id, employee_name)
 );
 
 CREATE TABLE IF NOT EXISTS remittance (
@@ -79,7 +80,8 @@ CREATE TABLE IF NOT EXISTS remittance (
     month_label         VARCHAR,
     source_file         VARCHAR,
     loaded_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_latest           BOOLEAN DEFAULT TRUE
+    is_latest           BOOLEAN DEFAULT TRUE,
+    UNIQUE (tcn)
 );
 
 -- ── Golden Record ─────────────────────────────────────────────────────────────
@@ -98,15 +100,31 @@ CREATE TABLE IF NOT EXISTS reconciliation (
     payroll_vs_billed       DECIMAL(10,2),
     billing_vs_paid         DECIMAL(10,2),
     payroll_vs_paid         DECIMAL(10,2),
-    result_simple           VARCHAR,    -- Good | Follow up | No Payroll Hours
+    result_simple           VARCHAR,    -- Good | Follow up | No Payroll Data | etc.
     result_detailed         VARCHAR,    -- Not Billed | Billed Short | Paid Less | etc.
     is_copay_client         BOOLEAN DEFAULT FALSE,
     match_status            VARCHAR DEFAULT 'MATCHED', -- MATCHED | UNMATCHED | NOT_AVAILABLE
     analyst_override        VARCHAR,    -- YN Good, UD Good if carried from source
     yash_comments           TEXT,
     connie_comments         TEXT,
+    care_type               VARCHAR,    -- Skilled | Unskilled
     created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ── Ingested Files ────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS ingested_files (
+    id            INTEGER PRIMARY KEY,
+    filename      VARCHAR NOT NULL,
+    file_type     VARCHAR NOT NULL,   -- 'payroll' | 'remittance' | 'recon'
+    file_hash     VARCHAR NOT NULL,   -- SHA-256 of file content
+    file_path     VARCHAR,
+    row_count     INTEGER,
+    week_start    DATE,               -- populated for payroll files
+    week_end      DATE,
+    ingested_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (filename, file_hash)      -- same filename+hash = already ingested
 );
 
 -- ── Analyst Workflow ──────────────────────────────────────────────────────────
@@ -141,6 +159,8 @@ CREATE SEQUENCE IF NOT EXISTS seq_remittance      START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_reconciliation  START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_rebill_tracker  START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_review_actions  START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_ingested_files  START 1;
+
 """
 
 

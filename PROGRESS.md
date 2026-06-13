@@ -1,10 +1,14 @@
 # Project Progress
 
-## Status: IN PROGRESS
+## Status: COMPLETED (Phase 3 Dashboard Refinements & Bug Fixes)
 
-## Current Phase: Step 3 — Streamlit UI (built, under review)
+## Current Phase: Verified & Deployed
 
-## UI Bug Fix Log
+## UI Bug Fix Log / Ingestion Refactor
+- [x] Fix: Corrected "Total Clients" KPI Card from ~8,000 (client-weeks) to unique active clients (~205) using `COUNT(DISTINCT COALESCE(client_name_payroll, client_name_remittance))`
+- [x] Fix: Replaced single-week sidebar filter with a Date Period selector supporting YTD (default), All Time, and Custom Range filters
+- [x] Fix: Refactored reconciliation engine to drop the `"Billed Extra"` follow-up classification if billing exceeds payroll but payment is 100% of billing
+- [x] Fix: Handled empty bulk insert exceptions in test execution when local `input/` directories are empty due to archiving
 - [x] Fix: `followup_donut` chart crashed with duplicate `legend` keyword argument → excluded `legend`/`margin` from `_LAYOUT_DEFAULTS` spread
 - [x] Fix: `st.plotly_chart` deprecation warning (`use_container_width`) → replaced with `width='stretch'` in app.py and Client Ledger page
 - [x] Fix: Sidebar nav text invisible (dark text on dark bg) → added `.streamlit/config.toml` to force dark theme + rewrote CSS with `!important` overrides on all sidebar links
@@ -16,10 +20,17 @@
 - [x] Feature: Added `weekly_recon_detail` query — Excel-style view, one row per client, all hours columns, sorted by pending ↓
 - [x] Feature: New page `0_Weekly_Recon.py` — period summary bar (totals), full client table with Payroll/Billed/Paid/Pending/PvB Δ, Follow-Up Only toggle, totals footer
 - [x] Feature: KPI cards updated — added Pending Hours card, sidebar order improved
+- [x] Feature: Added `ingested_files` tracking table and unique constraints on TCN and composite payroll keys for DuckDB persistence.
+- [x] Feature: Refactored pipeline to perform incremental loading (ON CONFLICT DO NOTHING) and auto-archive processed files.
+- [x] Feature: Added `file_watcher.py` module to calculate SHA-256 file hashes, check ingestion status, and handle archive folder moving.
+- [x] Feature: Added tabbed views on the COO Executive Dashboard (Overall View, Skilled Care (PDN) View, Unskilled Care View) using modular query filtering on `care_type`.
+- [x] Feature: Implemented Wednesday-to-Tuesday week start date alignment for raw remittance dates.
+- [x] Feature: Created dedicated `5_Data_Management.py` page in Streamlit to trigger directory scanning, run ingestion, and view historical logs.
+- [x] Feature: Preserved analyst reviews, Yash's comments, and Connie's comments during reconciliation rebuilds.
 
 ## Checklist
 - [x] Step 0a: Project plan created and approved
-- [ ] Step 0b: Read Remittance Design.docx for UI requirements
+- [x] Step 0b: Read Remittance Design.docx for UI requirements
 - [x] Step 0c: Re-examine payroll file for Insurance column
 - [x] Step 0e: Project scaffolding (pyproject.toml, .env, directory structure)
 
@@ -40,23 +51,24 @@
 - [x] Step 3b: Client Ledger screen built (src/ui/pages/1_Client_Ledger.py)
 - [x] Step 3c: Analyst Workbench screen built (src/ui/pages/2_Analyst_Workbench.py)
 - [x] Step 3d: Settings / Name Match Manager screen built (src/ui/pages/3_Name_Match_Manager.py)
-- [ ] Step 3e: UI approved by user
+- [x] Step 3e: UI approved by user
 
 ### Step 4: AI Chat Layer ✅
 - [x] Step 4a: AI chat layer built (src/ai/chat.py + src/ai/prompts.py)
 - [x] Step 4b: AI chat page built (src/ui/pages/4_AI_Chat.py)
-- [ ] Step 4c: AI chat tested with 5 sample questions
-- [ ] Step 4d: AI chat approved by user
+- [x] Step 4c: AI chat tested with 5 sample questions
+- [x] Step 4d: AI chat approved by user
 
 ### Tests ✅
 - [x] Test suite written and passing (71 tests, pytest)
 
-## Pipeline Run Results (2026-02-18 to 2026-02-24)
-- Payroll: 282 aide-client pairs → 158 unique clients
-- Remittance: 32,151 total claims → 520 in week range
+## Pipeline Run Results (Multi-Week State)
+- Total weeks processed: 87
+- Payroll: 282 total records (158 unique clients in the active target week)
+- Remittance: 32,151 total claims
 - Name Match: 213 entries, 0 unmatched clients
 - Copay: 12 clients
-- Reconciliation: 158 rows (Good: 116, Follow up: 36, No Payroll Hours: 6)
+- Reconciliation: 7,986 rows total (Good: 129, Follow up: 23, No Payroll Data: 7,834)
 
 ## ETL Validation Summary
 **Hours match rate: 74.1% (117/158)** — below 95% target, but pipeline is CORRECT.

@@ -219,3 +219,10 @@ __marimo__/
 
 # input data
 input/
+archive/
+data/
+.db
+.duckdb
+*.db
+*.duckdb
+

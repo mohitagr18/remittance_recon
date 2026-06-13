@@ -563,3 +563,236 @@ uv run pytest tests/test_reconciliation.py -v
 uv run pytest tests/test_etl_validation.py -v   # Row-by-row comparison
 uv run pytest tests/test_queries.py -v
 ```
+
+
+Phase 2
+
+# Data Persistence, File Watching & Multi-Week Recon
+
+## What This Fixes
+
+Three interconnected problems:
+
+1. **Data gets wiped on every pipeline run** — `DELETE FROM remittance / payroll` before each insert means re-running destroys history. Source files can't be removed safely.
+2. **No multi-week visibility** — The reconciliation table only holds the one week matching the loaded payroll file. All other weeks in the remittance master are invisible.
+3. **No auto-ingestion** — Adding a new payroll file requires a manual code/CLI change. The system should detect and process new files automatically.
+
+---
+
+## Proposed Changes
+
+### Component 1: DB Schema — `ingested_files` table
+
+#### [MODIFY] [schema.py](file:///Users/mohit/Documents/GitHub/remittance_recon/src/db/schema.py)
+
+Add a new `ingested_files` table to track every source file ever processed:
+
+```sql
+CREATE TABLE IF NOT EXISTS ingested_files (
+    id            INTEGER PRIMARY KEY,
+    filename      VARCHAR NOT NULL,
+    file_type     VARCHAR NOT NULL,   -- 'payroll' | 'remittance' | 'recon'
+    file_hash     VARCHAR NOT NULL,   -- SHA-256 of file content
+    file_path     VARCHAR,
+    row_count     INTEGER,
+    week_start    DATE,               -- populated for payroll files
+    week_end      DATE,
+    ingested_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (filename, file_hash)      -- same filename+hash = already ingested
+);
+```
+
+Also add a **UNIQUE constraint** to the `remittance` table on `tcn` so we can use `INSERT OR IGNORE`:
+```sql
+ALTER TABLE remittance ADD UNIQUE (tcn);
+```
+
+And a **UNIQUE constraint** on `payroll` for deduplication:
+```sql
+(week_start_date, client_name_raw, employee_id, employee_name)
+```
+
+---
+
+### Component 2: ETL — Incremental ingestion
+
+#### [MODIFY] [pipeline.py](file:///Users/mohit/Documents/GitHub/remittance_recon/src/etl/pipeline.py)
+
+Replace destructive `DELETE FROM` + `INSERT` with:
+
+**For remittance:**
+- Skip entire file if `(filename, file_hash)` already exists in `ingested_files`
+- Otherwise, insert all records with `INSERT OR IGNORE ON CONFLICT (tcn) DO NOTHING`
+- Mark file in `ingested_files`
+
+**For payroll:**
+- Same skip-if-seen logic on `(filename, file_hash)`
+- Insert with conflict ignore on `(week_start_date, client_name_raw, employee_id)`
+
+**Reconciliation rebuild:**
+- After ingesting any new payroll file, rebuild `reconciliation` for that week only (not all weeks)
+- After ingesting a new remittance file, rebuild reconciliation for all weeks that now have new data
+
+#### [NEW] `src/etl/file_watcher.py`
+
+A lightweight file scanner (no external dependencies):
+```python
+def scan_input_dir(input_dir: Path) -> list[PendingFile]
+```
+
+- Walks `input/` directory
+- Classifies files by name pattern:
+  - `EmpTimeCardReport*.xlsx` → `payroll`
+  - `V*.xlsx` or `*Remittance*.xlsx` → `remittance`
+  - `Payroll-Billing-Remittance*.xlsx` → `recon` (name mapping / copay source)
+- Computes SHA-256 hash of each file
+- Checks against `ingested_files` table
+- Returns list of files not yet ingested (new or changed)
+
+---
+
+### Component 3: Multi-week reconciliation
+
+#### [MODIFY] [pipeline.py](file:///Users/mohit/Documents/GitHub/remittance_recon/src/etl/pipeline.py)
+
+Add `build_remittance_only_weeks()` function:
+
+- After ingesting remittance, find all distinct `(week_start, client)` combos in raw `remittance` table that do NOT have a payroll row
+- Build reconciliation rows with `payroll_hours = NULL`, `result_simple = 'Remittance Only'`
+- This makes ALL weeks visible in the Weekly Recon page
+
+#### [MODIFY] [queries.py](file:///Users/mohit/Documents/GitHub/remittance_recon/src/db/queries.py)
+
+Update `available_weeks()` to pull from **remittance** table (all DOS weeks), not just reconciliation:
+
+```sql
+SELECT DISTINCT
+    DATE_TRUNC('week', first_dos) AS week_start
+FROM remittance
+ORDER BY week_start DESC
+```
+
+Update `weekly_recon_detail()` to read from a view that joins reconciliation + remittance-only weeks.
+
+---
+
+### Component 4: Streamlit — Data Management page
+
+#### [NEW] `src/ui/pages/5_Data_Management.py`
+
+A dedicated page for ingestion control:
+
+- **File Scanner panel**: Lists all files in `input/` with status (✅ Ingested / 🆕 New / 🔄 Changed)
+- **"Ingest New Files" button**: Runs the incremental pipeline for pending files only
+- **Ingestion log**: Shows `ingested_files` table — filename, type, rows, date, hash
+- **Auto-scan on page load**: Runs `scan_input_dir()` every time the page opens
+
+> [!NOTE]
+> No background daemon needed — scanning happens when the page loads or the button is clicked. This is reliable and doesn't require watchdog or cron.
+
+---
+
+### Component 5: Config cleanup
+
+#### [MODIFY] [config.py](file:///Users/mohit/Documents/GitHub/remittance_recon/src/config.py)
+
+- Replace single `payroll_file` / `remittance_file` with `input_dir: Path`
+- The scanner finds all relevant files in that directory automatically
+- Keep `recon_file` for the name-mapping/copay source (it doesn't change often)
+
+---
+
+## Data Flow After Changes
+
+```
+input/ directory
+├── EmpTimeCardReport - PY 03062026.xlsx   ← payroll week 1
+├── EmpTimeCardReport - PY 03132026.xlsx   ← payroll week 2 (future)
+├── V5.1 2026 Remittance Report Master.xlsx ← all remittance weeks
+└── Payroll-Billing-Remittance *.xlsx      ← name mapping / copay
+
+         ↓  scan_input_dir() on page load
+         
+ingested_files table
+├── remittance: V5.1 2026... → SHA256: abc → ✅ ingested
+└── payroll: EmpTimeCardReport PY 03062026 → ✅ ingested
+
+         ↓  if new file detected
+
+incremental_pipeline(file)
+├── remittance: INSERT OR IGNORE on TCN
+├── payroll: INSERT OR IGNORE on (week, client, employee)
+├── rebuild reconciliation for affected weeks
+└── build remittance-only rows for weeks without payroll
+```
+
+---
+
+## Verification Plan
+
+### Automated
+```bash
+pytest tests/ -v
+```
+
+### Manual
+1. Run full ingest of current files → verify `ingested_files` table populated
+2. Re-run ingest → verify no duplicate rows inserted, file skipped
+3. Add a new (fake) payroll file → verify new week appears in Weekly Recon
+4. Weekly Recon page: select a week from remittance that has no payroll → verify billed/paid shown, payroll column shows `—`
+5. Source files can be moved out of `input/` → DB still serves all data
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> **Q1: Should the source files be moved/archived after ingestion, or just left in place?**
+> The system will be able to function without them once ingested — but leaving them is safer for re-import. Recommendation: leave them, but show "✅ Already in DB" status.
+
+> [!IMPORTANT]
+> **Q2: For weeks where only remittance data exists (no payroll), what result label should the reconciliation row show?**
+> Options: `"Remittance Only"` (descriptive), `"No Payroll Data"` (same as existing `"No Payroll Hours"`), or just show NULL. Recommend: `"Remittance Only"` as a distinct status.
+
+> [!IMPORTANT]
+> **Q3: When a new remittance master file is uploaded (e.g., V5.2), should it fully replace V5.1 records, or append?**
+> Since TCN is the dedup key, unchanged claims will be skipped automatically. New/updated claims (new TCN or newer payment_date for same TCN) will be added. This handles incremental remittance updates correctly.
+
+---
+
+# Phase 3: Dashboard Refinements & Bug Fixes
+
+## What This Fixes
+
+1. **Inaccurate "Total Clients" KPI Card**: Currently shows total client-weeks (~8,000) instead of unique active clients (~250).
+2. **Missing YTD Date Range Filters**: The COO Executive Dashboard lacks a date range filter, only offering single-week selection. It should default to YTD.
+3. **Invalid "Billed Extra" Follow-Up**: Reconciliations flag billing that exceeds payroll as a follow-up ("Billed Extra"), even if the insurance paid 100% of the billed hours.
+
+## Proposed Changes
+
+### Component 1: Queries — `src/db/queries.py`
+- **Modify** `weekly_summary()` to return unique clients using `COUNT(DISTINCT COALESCE(client_name_payroll, client_name_remittance))` instead of `COUNT(*)`.
+- **Modify** `weekly_summary()`, `rolling_trend()`, `followup_reason_breakdown()`, `top_followup_clients()`, and `payer_collection_rates()` to accept `start_date` and `end_date` parameters and apply them to `week_start_date` bounds.
+
+### Component 2: Reconciliation Logic — `src/etl/reconciliation.py`
+- **Modify** `compute_result()` to remove the `"Billed Extra"` follow-up check. If billing exceeds payroll and payment matches billing, mark as `"Good"`, `None`.
+
+### Component 3: COO Dashboard UI — `src/ui/app.py`
+- **Modify** `src/ui/app.py` to replace the single-week filter in the sidebar with a **Date Period** selector:
+  - Options: `Year to Date (YTD)` (Default), `All Time`, `Custom Range`.
+  - Auto-detects the maximum year in the database to define the YTD range starting from January 1st of that year.
+  - Dynamically updates all page queries with the resulting date range.
+
+## Verification Plan
+
+### Automated Tests
+- Run full suite of unit and integration tests:
+  ```bash
+  uv run pytest tests/ -v
+  ```
+
+### Manual Verification
+- Verify that the `Total Clients` KPI card displays the correct number of unique active clients (~205) on the default YTD view.
+- Confirm the date preset selector sidebar options function correctly and filter all metrics across the start/end range.
+- Confirm that the number of follow-ups drops (from 32 down to 23) because "Billed Extra" claims that are fully paid are resolved to Good.
+

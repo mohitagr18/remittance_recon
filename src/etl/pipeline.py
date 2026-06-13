@@ -1,17 +1,18 @@
 """
 src/etl/pipeline.py
-Orchestrator: read → normalize → reconcile → write to DuckDB.
-
-Usage:
-    from src.etl.pipeline import run_pipeline
-    summary = run_pipeline()
+Orchestrator: scan input directories → normalize → reconcile → write to DuckDB.
+Supports incremental loading, archiving, and multi-week reconciliation.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import sys
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from pathlib import Path
+import duckdb
 
 from src.config import cfg
 from src.db.connection import get_persistent_conn
@@ -31,13 +32,15 @@ from src.etl.remittance import (
     filter_by_dos_range,
     parse_remittance,
 )
+from src.etl.file_watcher import scan_input_dir, archive_file, compute_file_hash, PendingFile
 
 log = logging.getLogger(__name__)
 
+# Check if currently running under a test runner (e.g. pytest)
+IS_TEST = "pytest" in sys.modules or "py.test" in sys.argv or any("test" in arg for arg in sys.argv)
 
-# ── Normalization helper ───────────────────────────────────────────────────────
 
-import re
+# ── Normalization helpers ──────────────────────────────────────────────────────
 
 def _normalize_client_key(name: str) -> str:
     """Normalize client name for matching: strip commas, collapse spaces, uppercase."""
@@ -45,10 +48,6 @@ def _normalize_client_key(name: str) -> str:
     s = re.sub(r"\s+", " ", s).strip().upper()
     return s
 
-
-# ── Insurance name mapping ─────────────────────────────────────────────────────
-# Remittance file uses different insurance names than payroll.
-# This maps remittance insurance → payroll insurance for matching.
 
 INSURANCE_MAP: dict[str, str] = {
     "United": "UHC",
@@ -64,8 +63,39 @@ def _normalize_insurance(insurance: str | None) -> str | None:
     return INSURANCE_MAP.get(insurance, insurance)
 
 
-# ── Summary dataclass ──────────────────────────────────────────────────────────
+def get_week_start(d: date) -> date:
+    """Align date to Wednesday-start week (Wednesday to Tuesday)."""
+    offset = (d.weekday() - 2) % 7
+    return d - timedelta(days=offset)
 
+
+def get_week_end(start_date: date) -> date:
+    """Wednesday to Tuesday: end is 6 days after start."""
+    return start_date + timedelta(days=6)
+
+
+def determine_care_type(client_name_raw: str | None, insurance: str | None) -> str:
+    """PDN clients are skilled, others are unskilled."""
+    client_name_raw = client_name_raw or ""
+    insurance = insurance or ""
+    if re.search(r"\b(?:LPN|RN)\b", client_name_raw, re.IGNORECASE) or "PDN" in insurance.upper():
+        return "Skilled"
+    return "Unskilled"
+
+
+def load_name_match_from_db(conn: duckdb.DuckDBPyConnection) -> dict[str, str | None]:
+    """Retrieve name mapping from DB as a fallback."""
+    rows = conn.execute("SELECT payroll_name, remittance_name FROM name_match").fetchall()
+    return {r[0].upper(): r[1] for r in rows}
+
+
+def load_copay_clients_from_db(conn: duckdb.DuckDBPyConnection) -> set[str]:
+    """Retrieve copay clients list from DB as a fallback."""
+    rows = conn.execute("SELECT client_name FROM copay_clients").fetchall()
+    return {r[0].upper() for r in rows}
+
+
+# ── Summary dataclass ──────────────────────────────────────────────────────────
 
 @dataclass
 class PipelineSummary:
@@ -99,7 +129,6 @@ class PipelineSummary:
 
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
-
 def run_pipeline(
     payroll_path: Path | None = None,
     remittance_path: Path | None = None,
@@ -107,172 +136,94 @@ def run_pipeline(
     db_path: Path | None = None,
 ) -> PipelineSummary:
     """
-    Execute the full ETL pipeline:
-    1. Parse all three source files
-    2. Build name-match and copay lookup structures
-    3. Join payroll + remittance on normalized client name
-    4. Compute reconciliation flags
-    5. Write everything to DuckDB
-    6. Return summary statistics
+    Execute the incremental ETL pipeline:
+    1. Scan input/ directory for new files or process explicit paths
+    2. Write files incrementally to database using ON CONFLICT logic
+    3. Rebuild reconciliation table for all active weeks
+    4. Move processed files to archive (unless running tests)
     """
-    payroll_path = payroll_path or cfg.payroll_file
-    remittance_path = remittance_path or cfg.remittance_file
-    recon_path = recon_path or cfg.recon_file
     db_path = db_path or cfg.db_path
+    input_dir = cfg.input_dir
+    archive_dir = cfg.archive_dir
+    recon_path = recon_path or cfg.recon_file
 
-    summary = PipelineSummary()
-
-    # ── 1. Parse source files ──────────────────────────────────────────────────
-    log.info("Parsing payroll: %s", payroll_path)
-    payroll_data = parse_payroll(payroll_path)
-    summary.payroll_records = len(payroll_data["records"])
-
-    log.info("Parsing remittance: %s", remittance_path)
-    all_remittance = parse_remittance(remittance_path)
-    summary.remittance_records = len(all_remittance)
-
-    log.info("Loading name match + copay from: %s", recon_path)
-    name_mapping = load_name_match(recon_path)
-    copay_set = load_copay_clients(recon_path)
-    summary.name_match_entries = len(name_mapping)
-    summary.copay_entries = len(copay_set)
-
-    # ── 2. Aggregate payroll hours per client ──────────────────────────────────
-    aggregated_payroll = aggregate_payroll_hours(payroll_data["records"])
-    summary.payroll_clients = len(aggregated_payroll)
-    log.info("Aggregated payroll: %d unique clients", len(aggregated_payroll))
-
-    # ── 3. Filter remittance to the target week and aggregate ──────────────────
-    week_start = payroll_data["week_start_date"]
-    week_end = payroll_data["week_end_date"]
-    log.info("Filtering remittance to week %s – %s", week_start, week_end)
-
-    filtered_remittance = filter_by_dos_range(all_remittance, week_start, week_end)
-    summary.remittance_filtered = len(filtered_remittance)
-    log.info("Remittance records in week range: %d", len(filtered_remittance))
-
-    # Normalize insurance in filtered remittance records
-    for rec in filtered_remittance:
-        rec["insurance_normalized"] = _normalize_insurance(rec.get("insurance"))
-
-    aggregated_remittance = aggregate_remittance_hours(filtered_remittance)
-
-    # ── 4. Build remittance lookup: normalized_client_name → hours ──────────────
-    # Match by client name only (same as Excel recon). Insurance mapping is used
-    # only for normalizing the stored insurance value, not for filtering.
-    remit_lookup: dict[str, dict] = {}
-    for remit_name, data in aggregated_remittance.items():
-        client_key = _normalize_client_key(remit_name)
-        remit_lookup[client_key] = data
-
-    # ── 5. Join and reconcile ──────────────────────────────────────────────────
-    reconciliation_rows = []
-    unmatched = []
-
-    for pr in aggregated_payroll:
-        payroll_name = pr["client_name_raw"]
-        insurance = pr.get("insurance")
-        payroll_hrs = pr["total_hours"] or 0.0
-
-        # Resolve name
-        remit_name, match_status = resolve_client_name(payroll_name, name_mapping)
-        copay = is_copay_client(payroll_name, copay_set)
-
-        # Look up remittance hours
-        billed_hrs = 0.0
-        paid_hrs = 0.0
-        remit_insurance = None
-
-        if match_status == "NOT_AVAILABLE":
-            # Skip non-billable clients — they still appear with 0 billed/paid
-            pass
-        elif remit_name:
-            client_key = _normalize_client_key(remit_name)
-            if client_key in remit_lookup:
-                rem_data = remit_lookup[client_key]
-                billed_hrs = rem_data["billed_hours"] or 0.0
-                paid_hrs = rem_data["paid_hours"] or 0.0
-                remit_insurance = rem_data.get("insurance")
-            else:
-                # Name resolved but not found in remittance — could be no claims this week
-                if match_status == "MATCHED":
-                    pass  # valid — just no remittance data
-        else:
-            # UNMATCHED
-            unmatched.append(payroll_name)
-
-        # Use payroll insurance; fall back to remittance insurance
-        final_insurance = insurance or remit_insurance
-
-        # Compute deltas
-        pvb, bvp, pvp = compute_deltas(payroll_hrs, billed_hrs, paid_hrs)
-
-        # Compute result
-        result_simple, result_detailed = compute_result(
-            payroll_hrs, billed_hrs, paid_hrs, is_copay=copay
-        )
-
-        reconciliation_rows.append({
-            "week_start_date": week_start,
-            "week_end_date": week_end,
-            "paycheck_date": payroll_data["paycheck_date"],
-            "insurance": final_insurance,
-            "client_name_payroll": payroll_name,
-            "client_name_remittance": remit_name,
-            "payroll_hours": payroll_hrs,
-            "billed_hours": billed_hrs,
-            "paid_hours": paid_hrs,
-            "payroll_vs_billed": pvb,
-            "billing_vs_paid": bvp,
-            "payroll_vs_paid": pvp,
-            "result_simple": result_simple,
-            "result_detailed": result_detailed,
-            "is_copay_client": copay,
-            "match_status": match_status,
-            "analyst_override": None,
-            "yash_comments": None,
-            "connie_comments": None,
-        })
-
-        # Tally results
-        if result_simple == "Good":
-            summary.result_good += 1
-        elif result_simple == "Follow up":
-            summary.result_followup += 1
-        elif result_simple == "No Payroll Hours":
-            summary.result_no_payroll += 1
-
-    summary.recon_rows = len(reconciliation_rows)
-    summary.unmatched_clients = unmatched
-
-    log.info(
-        "Reconciliation complete: %d rows (Good: %d, Follow up: %d, No Payroll: %d, Unmatched: %d)",
-        summary.recon_rows,
-        summary.result_good,
-        summary.result_followup,
-        summary.result_no_payroll,
-        len(unmatched),
-    )
-
-    # ── 6. Write to DuckDB ─────────────────────────────────────────────────────
-    log.info("Writing to DuckDB: %s", db_path)
     conn = get_persistent_conn(db_path)
     try:
         create_all(conn)
 
-        # Write reference tables
-        _write_name_match(conn, name_mapping)
-        _write_copay(conn, copay_set, recon_path)
-        _write_employees(conn, payroll_data["employees"])
+        # ── Load reference tables (always refresh if file exists) ──────────────────
+        name_mapping = {}
+        copay_set = set()
+        if recon_path.exists():
+            log.info("Loading name match + copay from: %s", recon_path)
+            name_mapping = load_name_match(recon_path)
+            copay_set = load_copay_clients(recon_path)
+            _write_name_match(conn, name_mapping)
+            _write_copay(conn, copay_set, recon_path)
+        else:
+            log.info("Reference Excel file not found. Loading from DB instead.")
+            name_mapping = load_name_match_from_db(conn)
+            copay_set = load_copay_clients_from_db(conn)
 
-        # Write fact tables
-        _write_payroll(conn, payroll_data["records"])
-        _write_remittance(conn, all_remittance)
+        # ── Find pending files ────────────────────────────────────────────────────
+        files_to_process: list[PendingFile] = []
+        
+        # If explicit files were provided (e.g. from tests), bypass scanning
+        if payroll_path or remittance_path:
+            if payroll_path and payroll_path.exists():
+                files_to_process.append(PendingFile(
+                    path=payroll_path, filename=payroll_path.name,
+                    file_type="payroll", file_hash=compute_file_hash(payroll_path),
+                    status="New"
+                ))
+            if remittance_path and remittance_path.exists():
+                files_to_process.append(PendingFile(
+                    path=remittance_path, filename=remittance_path.name,
+                    file_type="remittance", file_hash=compute_file_hash(remittance_path),
+                    status="New"
+                ))
+        else:
+            # Standard directory scanning mode
+            files_to_process = scan_input_dir(input_dir, conn)
+            # Only process new or modified files
+            files_to_process = [f for f in files_to_process if f.status in ("New", "Changed")]
 
-        # Write reconciliation
-        _write_reconciliation(conn, reconciliation_rows)
+        # ── Ingest pending files ──────────────────────────────────────────────────
+        for f in files_to_process:
+            log.info("Ingesting new file: %s (%s)", f.filename, f.file_type)
+            if f.file_type == "payroll":
+                payroll_data = parse_payroll(f.path)
+                _write_payroll_incremental(conn, payroll_data["records"])
+                _write_employees(conn, payroll_data["employees"])
+                
+                # Register in database
+                _mark_file_ingested(
+                    conn, f.filename, "payroll", f.file_hash, len(payroll_data["records"]),
+                    payroll_data.get("week_start_date"), payroll_data.get("week_end_date")
+                )
+                
+                # Archive file (skip if running tests)
+                if not (payroll_path or remittance_path) and not IS_TEST:
+                    archive_file(f.path, archive_dir)
 
-        log.info("All tables written to DuckDB successfully")
+            elif f.file_type == "remittance":
+                all_remittance = parse_remittance(f.path)
+                _write_remittance_incremental(conn, all_remittance)
+                
+                # Register in database
+                _mark_file_ingested(conn, f.filename, "remittance", f.file_hash, len(all_remittance))
+                
+                # Archive file (skip if running tests)
+                if not (payroll_path or remittance_path) and not IS_TEST:
+                    archive_file(f.path, archive_dir)
+
+        # ── Rebuild reconciliation and generate summary ───────────────────────────
+        summary = rebuild_reconciliation(conn, name_mapping, copay_set)
+        
+        # Populate references counts
+        summary.name_match_entries = len(name_mapping)
+        summary.copay_entries = len(copay_set)
+
     finally:
         conn.close()
 
@@ -281,16 +232,15 @@ def run_pipeline(
 
 # ── DB write helpers ───────────────────────────────────────────────────────────
 
-
 def _write_name_match(conn, name_mapping: dict) -> None:
     conn.execute("DELETE FROM name_match")
     records = build_name_match_records(name_mapping)
-    for r in records:
-        conn.execute(
-            """INSERT INTO name_match (id, payroll_name, remittance_name)
-               VALUES (nextval('seq_name_match'), ?, ?)""",
-            [r["payroll_name"], r["remittance_name"]],
-        )
+    params = [[r["payroll_name"], r["remittance_name"]] for r in records]
+    conn.executemany(
+        """INSERT INTO name_match (id, payroll_name, remittance_name)
+           VALUES (nextval('seq_name_match'), ?, ?)""",
+        params,
+    )
     conn.commit()
     log.info("Wrote %d name_match records", len(records))
 
@@ -298,114 +248,398 @@ def _write_name_match(conn, name_mapping: dict) -> None:
 def _write_copay(conn, copay_set: set, recon_path: Path) -> None:
     conn.execute("DELETE FROM copay_clients")
     records = build_copay_records(copay_set, recon_path)
-    for r in records:
-        conn.execute(
-            """INSERT INTO copay_clients (id, client_name, insurance)
-               VALUES (nextval('seq_copay_clients'), ?, ?)""",
-            [r["client_name"], r.get("insurance")],
-        )
+    params = [[r["client_name"], r.get("insurance")] for r in records]
+    conn.executemany(
+        """INSERT INTO copay_clients (id, client_name, insurance)
+           VALUES (nextval('seq_copay_clients'), ?, ?)""",
+        params,
+    )
     conn.commit()
     log.info("Wrote %d copay_clients records", len(records))
 
 
 def _write_employees(conn, employees: list[dict]) -> None:
-    conn.execute("DELETE FROM employees")
     seen_ids: set[str] = set()
-    written = 0
+    params = []
     for e in employees:
         emp_id = e.get("employee_id")
         if not emp_id or emp_id in seen_ids:
             continue
         seen_ids.add(emp_id)
-        conn.execute(
-            """INSERT INTO employees (employee_id, last_name, first_name, full_name, status)
-               VALUES (?, ?, ?, ?, ?)""",
-            [emp_id, e.get("last_name"), e.get("first_name"),
-             e.get("full_name"), e.get("status")],
-        )
-        written += 1
+        params.append([
+            emp_id, e.get("last_name"), e.get("first_name"),
+            e.get("full_name"), e.get("status")
+        ])
+        
+    conn.executemany(
+        """INSERT OR IGNORE INTO employees (employee_id, last_name, first_name, full_name, status)
+           VALUES (?, ?, ?, ?, ?)""",
+        params,
+    )
     conn.commit()
-    log.info("Wrote %d employee records (skipped %d duplicates)", written, len(employees) - written)
+    log.info("Upserted %d employee records", len(params))
 
 
-def _write_payroll(conn, records: list[dict]) -> None:
-    conn.execute("DELETE FROM payroll")
-    for r in records:
-        conn.execute(
-            """INSERT INTO payroll (id, week_start_date, week_end_date, paycheck_date,
-               client_name_raw, insurance, employee_name, employee_id,
-               regular_hours, respite_hours, total_hours, source_file)
-               VALUES (nextval('seq_payroll'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                r.get("week_start_date"), r.get("week_end_date"), r.get("paycheck_date"),
-                r.get("client_name_raw"), r.get("insurance"), r.get("employee_name"),
-                r.get("employee_id"), r.get("regular_hours"), r.get("respite_hours"),
-                r.get("total_hours"), r.get("source_file"),
-            ],
+def _write_payroll_incremental(conn, records: list[dict]) -> None:
+    sql = """
+        INSERT OR IGNORE INTO payroll (
+            id, week_start_date, week_end_date, paycheck_date,
+            client_name_raw, insurance, employee_name, employee_id,
+            regular_hours, respite_hours, total_hours, source_file
         )
+        VALUES (nextval('seq_payroll'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    params = [
+        [
+            r.get("week_start_date"), r.get("week_end_date"), r.get("paycheck_date"),
+            r.get("client_name_raw"), r.get("insurance"), r.get("employee_name"),
+            r.get("employee_id"), r.get("regular_hours"), r.get("respite_hours"),
+            r.get("total_hours"), r.get("source_file")
+        ]
+        for r in records
+    ]
+    conn.executemany(sql, params)
     conn.commit()
-    log.info("Wrote %d payroll records", len(records))
+    log.info("Incremental upserted %d payroll records", len(records))
 
 
-def _write_remittance(conn, records: list[dict]) -> None:
-    conn.execute("DELETE FROM remittance")
-    for r in records:
-        conn.execute(
-            """INSERT INTO remittance (id, batch, payment_date, transaction, match_status,
-               claim_number, transaction_type, charge_amount, payment_amount, allowed_amount,
-               client_first_name, client_last_name, client_name_combined, first_dos, last_dos,
-               tcn, billed_hours, paid_hours, hours_remaining, insurance, payment_value,
-               month_label, source_file, is_latest)
-               VALUES (nextval('seq_remittance'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                r.get("batch"), r.get("payment_date"), r.get("transaction"),
-                r.get("match_status"), r.get("claim_number"), r.get("transaction_type"),
-                r.get("charge_amount"), r.get("payment_amount"), r.get("allowed_amount"),
-                r.get("client_first_name"), r.get("client_last_name"),
-                r.get("client_name_combined"), r.get("first_dos"), r.get("last_dos"),
-                r.get("tcn"), r.get("billed_hours"), r.get("paid_hours"),
-                r.get("hours_remaining"), r.get("insurance"), r.get("payment_value"),
-                r.get("month_label"), r.get("source_file"), r.get("is_latest"),
-            ],
+def _write_remittance_incremental(conn, records: list[dict]) -> None:
+    sql = """
+        INSERT OR IGNORE INTO remittance (
+            id, batch, payment_date, transaction, match_status,
+            claim_number, transaction_type, charge_amount, payment_amount, allowed_amount,
+            client_first_name, client_last_name, client_name_combined, first_dos, last_dos,
+            tcn, billed_hours, paid_hours, hours_remaining, insurance, payment_value,
+            month_label, source_file, is_latest
         )
+        VALUES (nextval('seq_remittance'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    params = [
+        [
+            r.get("batch"), r.get("payment_date"), r.get("transaction"),
+            r.get("match_status"), r.get("claim_number"), r.get("transaction_type"),
+            r.get("charge_amount"), r.get("payment_amount"), r.get("allowed_amount"),
+            r.get("client_first_name"), r.get("client_last_name"),
+            r.get("client_name_combined"), r.get("first_dos"), r.get("last_dos"),
+            r.get("tcn"), r.get("billed_hours"), r.get("paid_hours"),
+            r.get("hours_remaining"), r.get("insurance"), r.get("payment_value"),
+            r.get("month_label"), r.get("source_file"), r.get("is_latest")
+        ]
+        for r in records
+    ]
+    conn.executemany(sql, params)
     conn.commit()
-    log.info("Wrote %d remittance records", len(records))
+    log.info("Incremental upserted %d remittance records", len(records))
 
 
-def _write_reconciliation(conn, rows: list[dict]) -> None:
+def _mark_file_ingested(
+    conn, filename: str, file_type: str, file_hash: str, row_count: int,
+    week_start: date | None = None, week_end: date | None = None
+) -> None:
+    conn.execute(
+        """INSERT OR IGNORE INTO ingested_files (id, filename, file_type, file_hash, row_count, week_start, week_end)
+           VALUES (nextval('seq_ingested_files'), ?, ?, ?, ?, ?, ?)""",
+        [filename, file_type, file_hash, row_count, week_start, week_end]
+    )
+    conn.commit()
+    log.info("Registered file in ingested_files: %s", filename)
+
+
+# ── Reconciliation rebuilding ─────────────────────────────────────────────────
+
+def rebuild_reconciliation(
+    conn: duckdb.DuckDBPyConnection,
+    name_mapping: dict[str, str | None],
+    copay_set: set[str],
+) -> PipelineSummary:
+    """
+    Rebuild the entire reconciliation table based on the current contents of the
+    payroll and remittance tables. Preserves analyst notes/overrides.
+    """
+    log.info("Rebuilding reconciliation table...")
+
+    # 1. Fetch and preserve existing overrides & comments
+    existing_overrides = {}
+    try:
+        rows = conn.execute(
+            """SELECT week_start_date, client_name_payroll, analyst_override, 
+                      yash_comments, connie_comments, created_at 
+               FROM reconciliation"""
+        ).fetchall()
+        for r in rows:
+            ws_str = str(r[0])
+            client_name = r[1]
+            existing_overrides[(ws_str, client_name)] = {
+                "analyst_override": r[2],
+                "yash_comments": r[3],
+                "connie_comments": r[4],
+                "created_at": r[5],
+            }
+    except Exception as e:
+        log.warning("Could not read existing overrides (this is expected on fresh schema): %s", e)
+
+    # 2. Re-create/clean the target table
     conn.execute("DELETE FROM reconciliation")
-    for r in rows:
-        conn.execute(
-            """INSERT INTO reconciliation (id, week_start_date, week_end_date, paycheck_date,
-               insurance, client_name_payroll, client_name_remittance,
-               payroll_hours, billed_hours, paid_hours,
-               payroll_vs_billed, billing_vs_paid, payroll_vs_paid,
-               result_simple, result_detailed, is_copay_client, match_status,
-               analyst_override, yash_comments, connie_comments)
-               VALUES (nextval('seq_reconciliation'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                r.get("week_start_date"), r.get("week_end_date"), r.get("paycheck_date"),
-                r.get("insurance"), r.get("client_name_payroll"),
-                r.get("client_name_remittance"), r.get("payroll_hours"),
-                r.get("billed_hours"), r.get("paid_hours"), r.get("payroll_vs_billed"),
-                r.get("billing_vs_paid"), r.get("payroll_vs_paid"),
-                r.get("result_simple"), r.get("result_detailed"),
-                r.get("is_copay_client"), r.get("match_status"),
-                r.get("analyst_override"), r.get("yash_comments"),
-                r.get("connie_comments"),
-            ],
+    conn.execute("DROP SEQUENCE IF EXISTS seq_reconciliation")
+    conn.execute("CREATE SEQUENCE seq_reconciliation START 1")
+
+    # 3. Determine all active weeks in the database
+    active_weeks: set[tuple[date, date]] = set()
+
+    # Weeks represented in payroll
+    payroll_weeks = conn.execute(
+        "SELECT DISTINCT week_start_date, week_end_date FROM payroll"
+    ).fetchall()
+    for ws, we in payroll_weeks:
+        active_weeks.add((ws, we))
+
+    # Weeks represented in remittance (map DOS to Wednesday-start cycles)
+    remit_dos_dates = conn.execute(
+        "SELECT DISTINCT first_dos FROM remittance WHERE is_latest = True AND first_dos IS NOT NULL"
+    ).fetchall()
+    for (fd,) in remit_dos_dates:
+        ws = get_week_start(fd)
+        we = get_week_end(ws)
+        active_weeks.add((ws, we))
+
+    sorted_weeks = sorted(list(active_weeks), key=lambda x: x[0], reverse=True)
+    log.info("Active weeks to reconcile: %d", len(sorted_weeks))
+
+    # 4. Load all records to avoid multiple subqueries (performance)
+    # Get all payroll records
+    raw_payroll = conn.execute(
+        """SELECT week_start_date, week_end_date, paycheck_date, client_name_raw, insurance, total_hours 
+           FROM payroll"""
+    ).fetchall()
+
+    # Get all remittance records
+    raw_remit = conn.execute(
+        """SELECT first_dos, last_dos, client_name_combined, billed_hours, paid_hours, insurance 
+           FROM remittance WHERE is_latest = True"""
+    ).fetchall()
+
+    reconciliation_rows = []
+    unmatched_clients = set()
+
+    # Build reverse name mapping to match remittance-only names back to payroll names
+    reverse_mapping = {v.upper(): k for k, v in name_mapping.items() if v is not None}
+
+    # 5. Process week by week
+    for week_start, week_end in sorted_weeks:
+        week_start_str = str(week_start)
+        
+        # Filter payroll to this week and aggregate by client
+        week_payroll = [r for r in raw_payroll if r[0] == week_start]
+        has_payroll = len(week_payroll) > 0
+
+        # Filter remittance to this week DOS range
+        week_remit = []
+        for r in raw_remit:
+            fd, ld = r[0], r[1]
+            if fd is None and ld is None:
+                continue
+            fd = fd or ld
+            ld = ld or fd
+            if fd <= week_end and ld >= week_start:
+                week_remit.append(r)
+
+        # Aggregate remittance records for this week
+        # Group by client_name_combined
+        aggregated_remit: dict[str, dict] = {}
+        for r in week_remit:
+            client = (r[2] or "").strip().upper()
+            if not client:
+                continue
+            if client not in aggregated_remit:
+                aggregated_remit[client] = {
+                    "billed_hours": 0.0,
+                    "paid_hours": 0.0,
+                    "insurance": r[5],
+                }
+            aggregated_remit[client]["billed_hours"] += float(r[3] or 0.0)
+            aggregated_remit[client]["paid_hours"] += float(r[4] or 0.0)
+
+        # Normalize keys for quick lookup
+        remit_lookup = {}
+        for r_name, data in aggregated_remit.items():
+            client_key = _normalize_client_key(r_name)
+            remit_lookup[client_key] = data
+
+        if has_payroll:
+            # Standard Join Mode: Loop over payroll clients
+            # Group payroll rows by client_name_raw
+            grouped_pay: dict[str, dict] = {}
+            paycheck_date = None
+            for r in week_payroll:
+                paycheck_date = r[2]
+                c_name = r[3]
+                if c_name not in grouped_pay:
+                    grouped_pay[c_name] = {
+                        "client_name_raw": c_name,
+                        "insurance": r[4],
+                        "total_hours": 0.0,
+                    }
+                grouped_pay[c_name]["total_hours"] += float(r[5] or 0.0)
+
+            for payroll_name, pay_data in grouped_pay.items():
+                insurance = pay_data["insurance"]
+                payroll_hrs = pay_data["total_hours"]
+
+                # Resolve client name
+                remit_name, match_status = resolve_client_name(payroll_name, name_mapping)
+                copay = is_copay_client(payroll_name, copay_set)
+
+                billed_hrs = 0.0
+                paid_hrs = 0.0
+                remit_insurance = None
+
+                if match_status == "NOT_AVAILABLE":
+                    pass
+                elif remit_name:
+                    client_key = _normalize_client_key(remit_name)
+                    if client_key in remit_lookup:
+                        rem_data = remit_lookup[client_key]
+                        billed_hrs = rem_data["billed_hours"]
+                        paid_hrs = rem_data["paid_hours"]
+                        remit_insurance = rem_data["insurance"]
+                else:
+                    unmatched_clients.add(payroll_name)
+
+                final_insurance = insurance or remit_insurance
+                pvb, bvp, pvp = compute_deltas(payroll_hrs, billed_hrs, paid_hrs)
+                result_simple, result_detailed = compute_result(
+                    payroll_hrs, billed_hrs, paid_hrs, is_copay=copay
+                )
+
+                # Fetch preserved comments
+                prev = existing_overrides.get((week_start_str, payroll_name), {})
+
+                reconciliation_rows.append({
+                    "week_start_date": week_start,
+                    "week_end_date": week_end,
+                    "paycheck_date": paycheck_date,
+                    "insurance": final_insurance,
+                    "client_name_payroll": payroll_name,
+                    "client_name_remittance": remit_name,
+                    "payroll_hours": payroll_hrs,
+                    "billed_hours": billed_hrs,
+                    "paid_hours": paid_hrs,
+                    "payroll_vs_billed": pvb,
+                    "billing_vs_paid": bvp,
+                    "payroll_vs_paid": pvp,
+                    "result_simple": result_simple,
+                    "result_detailed": result_detailed,
+                    "is_copay_client": copay,
+                    "match_status": match_status,
+                    "analyst_override": prev.get("analyst_override"),
+                    "yash_comments": prev.get("yash_comments"),
+                    "connie_comments": prev.get("connie_comments"),
+                    "care_type": determine_care_type(payroll_name, final_insurance),
+                })
+        else:
+            # Remittance-Only Mode (No Payroll File)
+            for remit_name, rem_data in aggregated_remit.items():
+                billed_hrs = rem_data["billed_hours"]
+                paid_hrs = rem_data["paid_hours"]
+                remit_insurance = rem_data["insurance"]
+
+                # Reverse resolve client name to payroll if match exists
+                payroll_name = reverse_mapping.get(remit_name.upper(), remit_name)
+                copay = is_copay_client(payroll_name, copay_set)
+
+                # Build row (payroll hours is None, status is 'No Payroll Data')
+                # Deltas: payroll_vs_billed = None, billing_vs_paid = billed - paid
+                pvb = None
+                bvp = round(billed_hrs - paid_hrs, 4)
+                pvp = None
+                
+                prev = existing_overrides.get((week_start_str, payroll_name), {})
+
+                reconciliation_rows.append({
+                    "week_start_date": week_start,
+                    "week_end_date": week_end,
+                    "paycheck_date": None,
+                    "insurance": remit_insurance,
+                    "client_name_payroll": payroll_name,
+                    "client_name_remittance": remit_name,
+                    "payroll_hours": None,
+                    "billed_hours": billed_hrs,
+                    "paid_hours": paid_hrs,
+                    "payroll_vs_billed": pvb,
+                    "billing_vs_paid": bvp,
+                    "payroll_vs_paid": pvp,
+                    "result_simple": "No Payroll Data",
+                    "result_detailed": "No Payroll Data",
+                    "is_copay_client": copay,
+                    "match_status": "MATCHED" if payroll_name != remit_name else "UNMATCHED",
+                    "analyst_override": prev.get("analyst_override"),
+                    "yash_comments": prev.get("yash_comments"),
+                    "connie_comments": prev.get("connie_comments"),
+                    "care_type": determine_care_type(payroll_name, remit_insurance),
+                })
+
+    # 6. Bulk Insert to reconciliation table
+    _write_reconciliation_rows(conn, reconciliation_rows)
+
+    # 7. Collect database status counts for the summary report
+    summary = PipelineSummary()
+    summary.payroll_records = conn.execute("SELECT COUNT(*) FROM payroll").fetchone()[0]
+    summary.payroll_clients = conn.execute("SELECT COUNT(DISTINCT client_name_raw) FROM payroll").fetchone()[0]
+    summary.remittance_records = conn.execute("SELECT COUNT(*) FROM remittance").fetchone()[0]
+    summary.recon_rows = conn.execute("SELECT COUNT(*) FROM reconciliation").fetchone()[0]
+    
+    summary.result_good = conn.execute("SELECT COUNT(*) FROM reconciliation WHERE result_simple = 'Good'").fetchone()[0]
+    summary.result_followup = conn.execute("SELECT COUNT(*) FROM reconciliation WHERE result_simple = 'Follow up'").fetchone()[0]
+    summary.result_no_payroll = conn.execute("SELECT COUNT(*) FROM reconciliation WHERE result_simple IN ('No Payroll Hours', 'No Payroll Data')").fetchone()[0]
+    summary.unmatched_clients = list(unmatched_clients)
+
+    log.info(
+        "Reconciliation rebuild done: %d rows (Good: %d, Follow up: %d, No Payroll Data: %d)",
+        summary.recon_rows,
+        summary.result_good,
+        summary.result_followup,
+        summary.result_no_payroll
+    )
+    return summary
+
+
+def _write_reconciliation_rows(conn, rows: list[dict]) -> None:
+    if not rows:
+        log.info("No records to insert into reconciliation")
+        return
+
+    sql = """
+        INSERT INTO reconciliation (
+            id, week_start_date, week_end_date, paycheck_date,
+            insurance, client_name_payroll, client_name_remittance,
+            payroll_hours, billed_hours, paid_hours,
+            payroll_vs_billed, billing_vs_paid, payroll_vs_paid,
+            result_simple, result_detailed, is_copay_client, match_status,
+            analyst_override, yash_comments, connie_comments, care_type
         )
+        VALUES (nextval('seq_reconciliation'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    params = [
+        [
+            r.get("week_start_date"), r.get("week_end_date"), r.get("paycheck_date"),
+            r.get("insurance"), r.get("client_name_payroll"), r.get("client_name_remittance"),
+            r.get("payroll_hours"), r.get("billed_hours"), r.get("paid_hours"),
+            r.get("payroll_vs_billed"), r.get("billing_vs_paid"), r.get("payroll_vs_paid"),
+            r.get("result_simple"), r.get("result_detailed"), r.get("is_copay_client"),
+            r.get("match_status"), r.get("analyst_override"), r.get("yash_comments"),
+            r.get("connie_comments"), r.get("care_type")
+        ]
+        for r in rows
+    ]
+    conn.executemany(sql, params)
     conn.commit()
-    log.info("Wrote %d reconciliation records", len(rows))
+    log.info("Inserted %d records into reconciliation", len(rows))
 
-
-# ── CLI entry point ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import json
-
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     summary = run_pipeline()
     print("\n=== Pipeline Summary ===")

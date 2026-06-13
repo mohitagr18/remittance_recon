@@ -26,10 +26,8 @@ class TestComputeResult:
         assert result == "Follow up"
         assert detail == "Billed Short"
 
-    def test_followup_billed_extra(self):
-        result, detail = compute_result(35, 40, 40)
-        assert result == "Follow up"
-        assert detail == "Billed Extra"
+    def test_billed_extra_is_good(self):
+        assert compute_result(35, 40, 40) == ("Good", None)
 
     def test_followup_not_paid(self):
         result, detail = compute_result(35, 35, 0)
