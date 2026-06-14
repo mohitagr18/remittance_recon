@@ -161,8 +161,18 @@ else:
         "DENIED":    "🔴",
     }
 
+    # Format date range into one readable column starting with YYYY-MM-DD for chronological sorting
+    rebill_df["week_range"] = (
+        pd.to_datetime(rebill_df["week_start_date"]).dt.strftime("%Y-%m-%d")
+        + " ("
+        + pd.to_datetime(rebill_df["week_start_date"]).dt.strftime("%b %d")
+        + " – "
+        + pd.to_datetime(rebill_df["week_end_date"]).dt.strftime("%b %d")
+        + ")"
+    )
+
     display_cols = [c for c in [
-        "id", "insurance", "client_name_payroll", "week_start_date",
+        "id", "insurance", "client_name_payroll", "week_range",
         "tcn", "denial_code", "rebill_date", "status", "notes", "created_at",
     ] if c in rebill_df.columns]
 
@@ -178,7 +188,7 @@ else:
             "id":                   st.column_config.NumberColumn("ID", width="small"),
             "insurance":            st.column_config.TextColumn("Insurance", width="small"),
             "client_name_payroll":  st.column_config.TextColumn("Client", width="medium"),
-            "week_start_date":      st.column_config.DateColumn("Week"),
+            "week_range":           st.column_config.TextColumn("Week", width="medium"),
             "tcn":                  st.column_config.TextColumn("TCN"),
             "denial_code":          st.column_config.TextColumn("Denial Code"),
             "rebill_date":          st.column_config.DateColumn("Rebill Date"),

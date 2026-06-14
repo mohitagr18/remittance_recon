@@ -72,10 +72,13 @@ n_followup    = (df["status"] == "Follow up").sum()
 n_good        = (df["status"] == "Good").sum()
 
 # Show week range if a specific week is selected
-if not df.empty and "week_start" in df.columns:
-    ws = pd.to_datetime(df["week_start"].iloc[0]).strftime("%b %d")
-    we = pd.to_datetime(df["week_end"].iloc[0]).strftime("%b %d, %Y")
-    week_label = f"{ws} – {we}"
+if week:
+    ws = pd.to_datetime(week).strftime("%b %d")
+    if not df.empty and "week_end" in df.columns:
+        we = pd.to_datetime(df["week_end"].iloc[0]).strftime("%b %d, %Y")
+        week_label = f"{ws} – {we}"
+    else:
+        week_label = f"{ws}"
 else:
     week_label = "All Weeks"
 
@@ -127,11 +130,14 @@ st.markdown(
 # ── Build display columns ───────────────────────────────────────────────────
 display = df.copy()
 
-# Format date range into one readable column
+# Format date range into one readable column starting with YYYY-MM-DD for chronological sorting
 display["week_range"] = (
-    pd.to_datetime(display["week_start"]).dt.strftime("%b %d")
+    pd.to_datetime(display["week_start"]).dt.strftime("%Y-%m-%d")
+    + " ("
+    + pd.to_datetime(display["week_start"]).dt.strftime("%b %d")
     + " – "
     + pd.to_datetime(display["week_end"]).dt.strftime("%b %d")
+    + ")"
 )
 
 show_cols = [
@@ -148,7 +154,7 @@ STATUS_ICON = {"Good": "✅", "Follow up": "⚠️", "No Payroll Hours": "⬜", 
 display["status"] = display["status"].map(lambda s: f"{STATUS_ICON.get(s, '')} {s}" if isinstance(s, str) else s)
 
 # ── Render table ────────────────────────────────────────────────────────────
-st.dataframe(
+selection = st.dataframe(
     display[show_cols],
     use_container_width=True,
     hide_index=True,
@@ -167,21 +173,24 @@ st.dataframe(
         "yash_comments":     st.column_config.TextColumn("Yash Notes",   width="medium"),
         "connie_comments":   st.column_config.TextColumn("Connie Notes", width="medium"),
     },
-    height=min(60 + len(display) * 35, 700),
+    on_select="rerun",
+    selection_mode="single-row",
+    key="weekly_recon_selection",
+    height=min(60 + len(display) * 35, 400),
 )
 
 st.caption(
     f"📊 {len(display):,} clients · sorted by ⏳ Pending hrs ↓ · "
-    f"PvB Δ = Payroll vs Billed difference"
+    f"PvB Δ = Payroll vs Billed difference · Click any row to view individual claim details below"
 )
 
-# ── Totals row ──────────────────────────────────────────────────────────────
+# ── Render totals row for the entire week ───────────────────────────────────
 st.markdown(
     f"""
     <div style='background:#13151f;border:1px solid #2a2d3e;border-radius:8px;
                 padding:12px 20px;margin-top:8px;font-size:0.82rem;
                 display:flex;gap:32px;flex-wrap:wrap;'>
-        <span style='color:#8892a4;font-weight:600;text-transform:uppercase;letter-spacing:.06em;'>TOTALS</span>
+        <span style='color:#8892a4;font-weight:600;text-transform:uppercase;letter-spacing:.06em;'>TOTALS (ALL CLIENTS)</span>
         <span>Payroll: <b style='color:#e8eaf0;'>{total_payroll:,.1f}</b></span>
         <span>Billed: <b style='color:#a78bfa;'>{total_billed:,.1f}</b></span>
         <span>Paid: <b style='color:#22c55e;'>{total_paid:,.1f}</b></span>
@@ -191,3 +200,113 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ── Render selected client details ──────────────────────────────────────────
+selected_rows = selection.selection.rows if selection.selection else []
+if selected_rows:
+    selected_row = display.iloc[selected_rows[0]]
+    client_name = selected_row["client"]
+    w_start = selected_row["week_start"]
+    w_end = selected_row["week_end"]
+    
+    st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class='section-header'>
+            <h3>🔍 Remittance Claim Details: {client_name} (Service Week: {selected_row['week_range']})</h3>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    # Try with remittance name matching
+    rem_name = client_name
+    summary_df = queries.client_summary(conn, client_name)
+    if not summary_df.empty and "client_name_remittance" in summary_df.columns:
+        alt = summary_df.iloc[0].get("client_name_remittance")
+        if alt:
+            rem_name = alt
+
+    rem_df = queries.client_ledger(conn, rem_name, start_date=w_start, end_date=w_end)
+    if rem_df.empty:
+        rem_df = queries.client_ledger(conn, client_name, start_date=w_start, end_date=w_end)
+
+    if rem_df.empty:
+        st.info("ℹ️ No claim-level remittance records found for this client during this service week.", icon="ℹ️")
+    else:
+        # Calculate deltas for dollars
+        rem_df["amt_delta"] = rem_df["charge_amount"] - rem_df["payment_amount"]
+        
+        def compute_rec_status(row):
+            b_hrs = row.get("billed_hours", 0) or 0
+            p_hrs = row.get("paid_hours", 0) or 0
+            b_amt = row.get("charge_amount", 0) or 0
+            p_amt = row.get("payment_amount", 0) or 0
+            
+            if p_hrs < 0 or p_amt < 0:
+                return "Reversal"
+            if b_hrs > 0:
+                if p_hrs >= b_hrs:
+                    return "Paid in Full"
+                elif p_hrs == 0:
+                    return "Denial / Unpaid"
+                else:
+                    return "Short Paid"
+            if b_amt > 0:
+                if p_amt >= b_amt:
+                    return "Paid in Full"
+                elif p_amt == 0:
+                    return "Denial / Unpaid"
+                else:
+                    return "Short Paid"
+            return "Unknown"
+
+        rem_df["reconciled_status"] = rem_df.apply(compute_rec_status, axis=1)
+
+        display_cols = [c for c in [
+            "first_dos", "last_dos", "payment_date",
+            "reconciled_status", "charge_amount", "payment_amount", "amt_delta",
+            "billed_hours", "paid_hours", "tcn",
+        ] if c in rem_df.columns]
+
+        st.dataframe(
+            rem_df[display_cols],
+            use_container_width=True,
+            hide_index=True,
+            height=(len(rem_df) + 1) * 35 + 3,
+            column_config={
+                "first_dos":         st.column_config.DateColumn("First DOS"),
+                "last_dos":          st.column_config.DateColumn("Last DOS"),
+                "payment_date":      st.column_config.DateColumn("Payment Date"),
+                "reconciled_status": st.column_config.TextColumn("Status", width="medium"),
+                "charge_amount":     st.column_config.NumberColumn("Charged Amt", format="$%.2f"),
+                "payment_amount":    st.column_config.NumberColumn("Paid Amt", format="$%.2f"),
+                "amt_delta":         st.column_config.NumberColumn("$ Delta", format="$%.2f"),
+                "billed_hours":      st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
+                "paid_hours":        st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
+                "tcn":               st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
+            },
+        )
+
+        # Calculate selected client totals
+        total_charged = rem_df["charge_amount"].sum()
+        total_paid = rem_df["payment_amount"].sum()
+        total_delta = rem_df["amt_delta"].sum()
+        total_billed_h = rem_df["billed_hours"].sum()
+        total_paid_h = rem_df["paid_hours"].sum()
+
+        st.markdown(
+            f"""
+            <div style='background:#13151f;border:1px solid #2a2d3e;border-radius:8px;
+                        padding:12px 20px;margin-top:8px;font-size:0.82rem;
+                        display:flex;gap:24px;flex-wrap:wrap;'>
+                <span style='color:#8892a4;font-weight:600;text-transform:uppercase;letter-spacing:.06em;'>TOTALS ({client_name})</span>
+                <span>Billed Hrs: <b style='color:#e8eaf0;'>{total_billed_h:,.1f}</b></span>
+                <span>Paid Hrs: <b style='color:#22c55e;'>{total_paid_h:,.1f}</b></span>
+                <span>Charged $: <b style='color:#a78bfa;'>${total_charged:,.2f}</b></span>
+                <span>Paid $: <b style='color:#22c55e;'>${total_paid:,.2f}</b></span>
+                <span>$ Delta: <b style='color:{"#e8eaf0" if total_delta == 0 else "#ef4444"};'>${total_delta:,.2f}</b></span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )

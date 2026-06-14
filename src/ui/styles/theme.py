@@ -200,6 +200,15 @@ def inject_css():
             border: none !important;
             border-radius: 6px;
         }
+
+        /* ── Scrollable Plotly Containers ────────────────────── */
+        div[data-testid="stPlotlyChart"] {
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+        }
+        div[data-testid="stPlotlyChart"] > div {
+            min-width: fit-content !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,

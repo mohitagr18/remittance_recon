@@ -45,19 +45,78 @@ st.markdown(
 )
 
 conn = _get_conn()
-clients = queries.all_clients(conn)
 
-if not clients:
+# Initialize session state for selected client if not present
+if "selected_client_ledger" not in st.session_state:
+    st.session_state.selected_client_ledger = None
+
+def on_skilled_change():
+    val = st.session_state.skilled_selector
+    if val:
+        st.session_state.selected_client_ledger = val
+        st.session_state.unskilled_selector = None  # Reset unskilled
+
+def on_unskilled_change():
+    val = st.session_state.unskilled_selector
+    if val:
+        st.session_state.selected_client_ledger = val
+        st.session_state.skilled_selector = None  # Reset skilled
+
+# Fetch client lists by care type
+try:
+    skilled_clients = conn.execute("""
+        SELECT DISTINCT client_name_payroll
+        FROM reconciliation
+        WHERE care_type = 'Skilled' AND client_name_payroll IS NOT NULL
+        ORDER BY client_name_payroll
+    """).df()["client_name_payroll"].tolist()
+
+    unskilled_clients = conn.execute("""
+        SELECT DISTINCT client_name_payroll
+        FROM reconciliation
+        WHERE care_type = 'Unskilled' AND client_name_payroll IS NOT NULL
+        ORDER BY client_name_payroll
+    """).df()["client_name_payroll"].tolist()
+except Exception:
+    # Fallback to all if table format differs
+    clients = queries.all_clients(conn)
+    skilled_clients = clients
+    unskilled_clients = clients
+
+if not skilled_clients and not unskilled_clients:
     st.info("No clients found. Run the ETL pipeline first.", icon="ℹ️")
     st.stop()
 
-# ── Client selector ─────────────────────────────────────────────────────────
-selected = st.selectbox(
-    "🔍 Search / Select Client",
-    options=clients,
-    placeholder="Type to search...",
-    key="ledger_client",
-)
+# ── Client selectors ─────────────────────────────────────────────────────────
+col_s, col_u = st.columns(2)
+
+with col_s:
+    st.selectbox(
+        "🩺 Skilled Clients (PDN)",
+        options=skilled_clients,
+        index=None if st.session_state.get("skilled_selector") is None else (
+            skilled_clients.index(st.session_state.skilled_selector) 
+            if st.session_state.skilled_selector in skilled_clients else None
+        ),
+        placeholder="Search skilled client...",
+        key="skilled_selector",
+        on_change=on_skilled_change,
+    )
+
+with col_u:
+    st.selectbox(
+        "🏡 Unskilled Clients",
+        options=unskilled_clients,
+        index=None if st.session_state.get("unskilled_selector") is None else (
+            unskilled_clients.index(st.session_state.unskilled_selector) 
+            if st.session_state.unskilled_selector in unskilled_clients else None
+        ),
+        placeholder="Search unskilled client...",
+        key="unskilled_selector",
+        on_change=on_unskilled_change,
+    )
+
+selected = st.session_state.selected_client_ledger
 
 if not selected:
     st.stop()
@@ -75,6 +134,8 @@ if not summary_df.empty:
     fu_weeks     = int(row.get("followup_weeks", 0) or 0)
     rate         = float(row.get("collection_rate_pct", 0) or 0)
 
+    ytd_pending  = ytd_billed - ytd_paid
+
     st.markdown(
         f"""
         <div style='background:linear-gradient(135deg,#1e2130,#252840);border:1px solid #2a2d3e;
@@ -89,12 +150,16 @@ if not summary_df.empty:
                 <div style='font-size:1rem;font-weight:600;color:#4f8ef7;margin-top:2px;'>{ins}</div>
             </div>
             <div>
-                <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>YTD Billed Hrs</div>
+                <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Billed Hrs</div>
                 <div style='font-size:1rem;font-weight:600;color:#e8eaf0;margin-top:2px;'>{ytd_billed:,.1f}</div>
             </div>
             <div>
-                <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>YTD Paid Hrs</div>
+                <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Paid Hrs</div>
                 <div style='font-size:1rem;font-weight:600;color:#22c55e;margin-top:2px;'>{ytd_paid:,.1f}</div>
+            </div>
+            <div>
+                <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Pending Hrs</div>
+                <div style='font-size:1rem;font-weight:600;color:#f59e0b;margin-top:2px;'>{ytd_pending:,.1f}</div>
             </div>
             <div>
                 <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Collection Rate</div>
@@ -109,17 +174,32 @@ if not summary_df.empty:
         unsafe_allow_html=True,
     )
 
-# ── Weekly billed vs paid chart ─────────────────────────────────────────────
+# ── Weekly billed vs paid chart & pending hours chart ────────────────────────
 client_recon = queries.client_weekly_recon_with_dos(conn, selected)
 
 if not client_recon.empty:
     st.markdown(
-        "<div class='section-header'><h3>📊 Weekly Billed vs Paid</h3></div>",
+        "<div class='section-header'><h3>📊 Weekly Reconciliation Trend</h3></div>",
         unsafe_allow_html=True,
     )
+    num_weeks = len(client_recon)
+    if num_weeks > 20:
+        st.markdown(
+            f"""
+            <style>
+            .element-container:has(div[data-testid="stPlotlyChart"]) {{
+                overflow-x: auto !important;
+            }}
+            div[data-testid="stPlotlyChart"] {{
+                min-width: {num_weeks * 45}px !important;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
     st.plotly_chart(
         client_billed_paid_chart(client_recon),
-        width="stretch",
+        use_container_width=True,
         config={"displayModeBar": False},
     )
 
@@ -152,30 +232,55 @@ else:
     ledger_df["hrs_delta"] = ledger_df["billed_hours"] - ledger_df["paid_hours"]
     ledger_df["amt_delta"] = ledger_df["charge_amount"] - ledger_df["payment_amount"]
 
+    def compute_rec_status(row):
+        b_hrs = row.get("billed_hours", 0) or 0
+        p_hrs = row.get("paid_hours", 0) or 0
+        b_amt = row.get("charge_amount", 0) or 0
+        p_amt = row.get("payment_amount", 0) or 0
+        
+        if p_hrs < 0 or p_amt < 0:
+            return "Reversal"
+        if b_hrs > 0:
+            if p_hrs >= b_hrs:
+                return "Paid in Full"
+            elif p_hrs == 0:
+                return "Denial / Unpaid"
+            else:
+                return f"Short Paid ({b_hrs - p_hrs:.1f} hrs remain)"
+        if b_amt > 0:
+            if p_amt >= b_amt:
+                return "Paid in Full"
+            elif p_amt == 0:
+                return "Denial / Unpaid"
+            else:
+                return "Short Paid"
+        return "Unknown"
+
+    ledger_df["reconciled_status"] = ledger_df.apply(compute_rec_status, axis=1)
+
     display_cols = [c for c in [
-        "payment_date", "tcn", "first_dos", "last_dos",
-        "transaction_type", "charge_amount", "payment_amount", "amt_delta",
-        "billed_hours", "paid_hours", "hrs_delta", "insurance", "match_status",
+        "first_dos", "last_dos", "payment_date",
+        "reconciled_status", "charge_amount", "payment_amount", "amt_delta",
+        "billed_hours", "paid_hours", "hrs_delta", "tcn",
     ] if c in ledger_df.columns]
 
     st.dataframe(
         ledger_df[display_cols],
         use_container_width=True,
         hide_index=True,
+        height=(len(ledger_df) + 1) * 35 + 3,
         column_config={
-            "payment_date":     st.column_config.DateColumn("Payment Date"),
-            "tcn":              st.column_config.TextColumn("TCN", width="medium"),
-            "first_dos":        st.column_config.DateColumn("First DOS"),
-            "last_dos":         st.column_config.DateColumn("Last DOS"),
-            "transaction_type": st.column_config.TextColumn("Transaction", width="medium"),
-            "charge_amount":    st.column_config.NumberColumn("Billed $", format="$%.2f"),
-            "payment_amount":   st.column_config.NumberColumn("Paid $", format="$%.2f"),
-            "amt_delta":        st.column_config.NumberColumn("$ Delta", format="$%.2f"),
-            "billed_hours":     st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
-            "paid_hours":       st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
-            "hrs_delta":        st.column_config.NumberColumn("Hrs Delta", format="%.1f"),
-            "insurance":        st.column_config.TextColumn("Insurance", width="small"),
-            "match_status":     st.column_config.TextColumn("Status", width="small"),
+            "first_dos":         st.column_config.DateColumn("First DOS"),
+            "last_dos":          st.column_config.DateColumn("Last DOS"),
+            "payment_date":      st.column_config.DateColumn("Payment Date"),
+            "reconciled_status": st.column_config.TextColumn("Status", width="medium"),
+            "charge_amount":     st.column_config.NumberColumn("Billed $", format="$%.2f"),
+            "payment_amount":    st.column_config.NumberColumn("Paid $", format="$%.2f"),
+            "amt_delta":         st.column_config.NumberColumn("$ Delta", format="$%.2f"),
+            "billed_hours":      st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
+            "paid_hours":        st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
+            "hrs_delta":         st.column_config.NumberColumn("Hrs Delta", format="%.1f"),
+            "tcn":               st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
         },
     )
     st.caption(f"{len(ledger_df):,} remittance records found")

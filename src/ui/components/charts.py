@@ -28,44 +28,58 @@ _LAYOUT_DEFAULTS = dict(
 
 
 def rolling_trend_chart(df: pd.DataFrame) -> go.Figure:
-    """Grouped bar chart — Billed vs Paid vs Pending hours by week."""
+    """Grouped bar chart — Billed vs Paid vs Pending hours by week, with negative pending subplot."""
     if df.empty:
         return _empty_fig("No trend data available")
 
     df = df.copy()
-    df["week"] = pd.to_datetime(df["week_start_date"]).dt.strftime("%b %d")
+    df["week"] = pd.to_datetime(df["week_start_date"]).dt.strftime("%b %d, %Y")
 
-    fig = go.Figure()
-    fig.add_bar(
-        name="Billed",
-        x=df["week"],
-        y=df["billed_hrs"],
-        marker_color="#4f8ef7",
-        marker_line_width=0,
+    # Determine pending hours (as negative value for shortfall representation)
+    pending_vals = -1.0 * df["pending_hrs"].abs()
+
+    from plotly.subplots import make_subplots
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.02,
+        row_heights=[0.68, 0.32],
+        subplot_titles=("", "")
     )
-    fig.add_bar(
-        name="Paid",
-        x=df["week"],
-        y=df["paid_hrs"],
-        marker_color="#22c55e",
-        marker_line_width=0,
+    
+    fig.add_trace(go.Bar(name="Billed", x=df["week"], y=df["billed_hrs"], marker_color="#4f8ef7"), row=1, col=1)
+    fig.add_trace(go.Bar(name="Paid", x=df["week"], y=df["paid_hrs"], marker_color="#22c55e"), row=1, col=1)
+    fig.add_trace(go.Bar(name="Pending", x=df["week"], y=pending_vals, marker_color="#ef4444", width=0.3), row=2, col=1)
+    
+    fig.update_xaxes(
+        gridcolor="#2a2d3e", 
+        tickfont=dict(color="#c8cfe0"), 
+        linecolor="#2a2d3e",
+        type="category"
     )
-    fig.add_bar(
-        name="Pending",
-        x=df["week"],
-        y=df["pending_hrs"],
-        marker_color="#f59e0b",
-        marker_line_width=0,
+    
+    fig.update_yaxes(
+        gridcolor="#2a2d3e", 
+        tickfont=dict(color="#c8cfe0"), 
+        linecolor="#2a2d3e"
     )
+    # Ensure y-axis range for pending is at least [-5, 0] to avoid tiny decimal ticks
+    min_pending = pending_vals.min()
+    y_min = min(min_pending * 1.1 - 1, -5) if not pd.isna(min_pending) else -5
+    fig.update_yaxes(range=[y_min, 0], row=2, col=1)
+    
     fig.update_layout(
         **_LAYOUT_DEFAULTS,
         barmode="group",
-        bargap=0.18,
-        bargroupgap=0.06,
-        xaxis=dict(gridcolor="#2a2d3e", tickfont=dict(size=11, color="#c8cfe0"), linecolor="#2a2d3e"),
-        yaxis=dict(gridcolor="#2a2d3e", title="Hours", tickfont=dict(color="#c8cfe0"), linecolor="#2a2d3e"),
-        height=280,
+        height=380,
     )
+    
+    # Customize subplot titles style
+    for annotation in fig['layout']['annotations']:
+        annotation['font'] = dict(size=12, color='#8892a4', family='Inter')
+        annotation['x'] = 0.0
+        annotation['xanchor'] = 'left'
+        
     return fig
 
 
@@ -160,7 +174,7 @@ def payer_bar_chart(df: pd.DataFrame) -> go.Figure:
 
 
 def client_billed_paid_chart(df: pd.DataFrame) -> go.Figure:
-    """Weekly billed vs paid bar chart for a specific client."""
+    """Weekly billed vs paid and pending hours subplots for a specific client."""
     if df.empty:
         return _empty_fig("No payment history")
 
@@ -176,28 +190,59 @@ def client_billed_paid_chart(df: pd.DataFrame) -> go.Figure:
         df = df.sort_values(by="week_start_date", ascending=True)
         df["x_axis"] = pd.to_datetime(df["week_start_date"]).dt.strftime("%b %d")
 
-    # Determine pending hours
+    # Determine pending hours (as negative value for shortfall representation)
     if "pending_hours" in df.columns:
         pending_vals = df["pending_hours"]
     elif "pending_hrs" in df.columns:
         pending_vals = df["pending_hrs"]
     else:
         pending_vals = df["billed_hours"] - df["paid_hours"]
+    
+    pending_vals = -1.0 * pending_vals.abs()
 
-    fig = go.Figure()
-    fig.add_bar(name="Billed", x=df["x_axis"], y=df["billed_hours"], marker_color="#4f8ef7")
-    fig.add_bar(name="Paid", x=df["x_axis"], y=df["paid_hours"], marker_color="#22c55e")
-    fig.add_bar(name="Pending", x=df["x_axis"], y=pending_vals, marker_color="#f59e0b")
+    from plotly.subplots import make_subplots
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.02,
+        row_heights=[0.68, 0.32],
+        subplot_titles=("", "")
+    )
+    
+    fig.add_trace(go.Bar(name="Billed", x=df["x_axis"], y=df["billed_hours"], marker_color="#4f8ef7"), row=1, col=1)
+    fig.add_trace(go.Bar(name="Paid", x=df["x_axis"], y=df["paid_hours"], marker_color="#22c55e"), row=1, col=1)
+    fig.add_trace(go.Bar(name="Pending", x=df["x_axis"], y=pending_vals, marker_color="#ef4444", width=0.3), row=2, col=1)
+    
+    fig.update_xaxes(
+        gridcolor="#2a2d3e", 
+        tickfont=dict(color="#c8cfe0"), 
+        linecolor="#2a2d3e",
+        type="category"
+    )
+    
+    fig.update_yaxes(
+        gridcolor="#2a2d3e", 
+        tickfont=dict(color="#c8cfe0"), 
+        linecolor="#2a2d3e"
+    )
+    # Ensure y-axis range for pending is at least [-5, 0] to avoid tiny decimal ticks
+    min_pending = pending_vals.min()
+    y_min = min(min_pending * 1.1 - 1, -5) if not pd.isna(min_pending) else -5
+    fig.update_yaxes(range=[y_min, 0], row=2, col=1)
     
     fig.update_layout(
         **_LAYOUT_DEFAULTS,
         barmode="group",
-        height=240,
-        xaxis=dict(gridcolor="#2a2d3e", tickfont=dict(color="#c8cfe0"), linecolor="#2a2d3e"),
-        yaxis=dict(gridcolor="#2a2d3e", title="Hours", tickfont=dict(color="#c8cfe0"), linecolor="#2a2d3e"),
+        height=430,
     )
+    
+    # Customize subplot titles style
+    for annotation in fig['layout']['annotations']:
+        annotation['font'] = dict(size=12, color='#8892a4', family='Inter')
+        annotation['x'] = 0.0
+        annotation['xanchor'] = 'left'
+        
     return fig
-
 
 
 def _empty_fig(msg: str) -> go.Figure:

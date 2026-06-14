@@ -572,6 +572,7 @@ def get_rebill_items(conn: duckdb.DuckDBPyConnection):
             rec.insurance,
             rec.client_name_payroll,
             rec.week_start_date,
+            rec.week_end_date,
             r.tcn,
             r.denial_code,
             r.rebill_date,
