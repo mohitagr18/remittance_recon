@@ -38,17 +38,6 @@ max_year = 2026  # Fallback default
 if max_date_res and max_date_res[0]:
     max_year = pd.to_datetime(max_date_res[0]).year
 
-# ── Sidebar ────────────────────────────────────────────────────────────────
-st.sidebar.markdown(
-    """
-    <div style='padding:16px 0 8px;'>
-        <div style='font-size:1.15rem;font-weight:700;color:#e8eaf0;'>💰 ReconApp</div>
-        <div style='font-size:0.72rem;color:#8892a4;margin-top:2px;'>Billing Reconciliation Platform</div>
-    </div>
-    <hr style='border-color:#1e2130;margin:8px 0 16px;'/>
-    """,
-    unsafe_allow_html=True,
-)
 st.sidebar.markdown("**Filters**")
 
 # Date range selection
@@ -87,11 +76,8 @@ st.markdown(
     """
     <div style='margin-bottom:1.2rem;'>
         <h1 style='margin:0;font-size:1.5rem;font-weight:700;color:#e8eaf0;'>
-            📊 COO Executive Dashboard
+            📊 Executive Dashboard
         </h1>
-        <div style='font-size:0.82rem;color:#8892a4;margin-top:4px;'>
-            Weekly payroll-billing-remittance reconciliation summary
-        </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -464,9 +450,9 @@ if selected_client:
         ledger_df["reconciled_status"] = ledger_df.apply(compute_rec_status, axis=1)
 
         display_cols = [c for c in [
-            "first_dos", "last_dos", "payment_date", "tcn",
-            "reconciled_status", "transaction_type", "charge_amount", "payment_amount", "amt_delta",
-            "billed_hours", "paid_hours", "hrs_delta",
+            "first_dos", "last_dos", "payment_date",
+            "reconciled_status", "charge_amount", "payment_amount", "amt_delta",
+            "billed_hours", "paid_hours", "hrs_delta", "tcn",
         ] if c in ledger_df.columns]
 
         st.dataframe(
@@ -478,15 +464,14 @@ if selected_client:
                 "first_dos":         st.column_config.DateColumn("First DOS"),
                 "last_dos":          st.column_config.DateColumn("Last DOS"),
                 "payment_date":      st.column_config.DateColumn("Payment Date"),
-                "tcn":               st.column_config.TextColumn("TCN", width="medium"),
                 "reconciled_status": st.column_config.TextColumn("Status", width="medium"),
-                "transaction_type":  st.column_config.TextColumn("Transaction (Payer)", width="medium"),
                 "charge_amount":     st.column_config.NumberColumn("Billed $", format="$%.2f"),
                 "payment_amount":    st.column_config.NumberColumn("Paid $", format="$%.2f"),
                 "amt_delta":         st.column_config.NumberColumn("$ Delta", format="$%.2f"),
                 "billed_hours":      st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
                 "paid_hours":        st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
                 "hrs_delta":         st.column_config.NumberColumn("Hrs Delta", format="%.1f"),
+                "tcn":               st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
             },
         )
         st.caption(f"{len(ledger_df):,} remittance records found")
