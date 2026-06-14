@@ -30,7 +30,7 @@ We preserve that tolerance here.
 
 from __future__ import annotations
 
-_TOLERANCE = 0.9
+TOLERANCE = 0.9
 
 
 def compute_result(
@@ -38,7 +38,7 @@ def compute_result(
     billed_hrs: float,
     paid_hrs: float,
     is_copay: bool = False,
-    tolerance: float = _TOLERANCE,
+    tolerance: float = TOLERANCE,
 ) -> tuple[str, str | None]:
     """
     Returns (result_simple, result_detailed).
@@ -47,6 +47,10 @@ def compute_result(
     payroll_hrs = _safe(payroll_hrs)
     billed_hrs = _safe(billed_hrs)
     paid_hrs = _safe(paid_hrs)
+
+    # Reversals / Clawbacks / Negative adjustments
+    if billed_hrs < 0 or paid_hrs < 0:
+        return "Follow up", "Payer Reversal"
 
     pvb = round(payroll_hrs - billed_hrs, 4)   # Payroll vs Billed
     bvp = round(billed_hrs - paid_hrs, 4)       # Billing vs Paid

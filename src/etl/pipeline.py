@@ -26,7 +26,7 @@ from src.etl.name_match import (
     resolve_client_name,
 )
 from src.etl.payroll import aggregate_payroll_hours, parse_payroll
-from src.etl.reconciliation import compute_deltas, compute_result
+from src.etl.reconciliation import compute_deltas, compute_result, TOLERANCE
 from src.etl.remittance import (
     aggregate_remittance_hours,
     filter_by_dos_range,
@@ -556,6 +556,23 @@ def rebuild_reconciliation(
                 
                 prev = existing_overrides.get((week_start_str, payroll_name), {})
 
+                # Reconcile billed vs paid for remittance-only weeks
+                bvp_abs = abs(bvp)
+                if billed_hrs < 0 or paid_hrs < 0:
+                    res_simple = "Follow up"
+                    res_detailed = "Payer Reversal"
+                elif bvp_abs <= TOLERANCE:
+                    res_simple = "Good"
+                    res_detailed = None
+                else:
+                    res_simple = "Follow up"
+                    if paid_hrs < 1:
+                        res_detailed = "Not Paid"
+                    elif paid_hrs < billed_hrs:
+                        res_detailed = "Paid Less"
+                    else:
+                        res_detailed = "Paid Excess"
+
                 reconciliation_rows.append({
                     "week_start_date": week_start,
                     "week_end_date": week_end,
@@ -569,8 +586,8 @@ def rebuild_reconciliation(
                     "payroll_vs_billed": pvb,
                     "billing_vs_paid": bvp,
                     "payroll_vs_paid": pvp,
-                    "result_simple": "No Payroll Data",
-                    "result_detailed": "No Payroll Data",
+                    "result_simple": res_simple,
+                    "result_detailed": res_detailed,
                     "is_copay_client": copay,
                     "match_status": "MATCHED" if payroll_name != remit_name else "UNMATCHED",
                     "analyst_override": prev.get("analyst_override"),

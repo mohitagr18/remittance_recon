@@ -25,7 +25,7 @@ st.set_page_config(
 
 from src.ui.styles.theme import inject_css
 from src.ui.components.kpi_cards import render_kpi_row
-from src.ui.components.charts import rolling_trend_chart, followup_donut, payer_bar_chart
+from src.ui.components.charts import rolling_trend_chart, followup_bar_chart, payer_bar_chart
 from src.ui.components.filters import week_filter, insurance_filter, _get_conn
 from src.db import queries
 conn = _get_conn()
@@ -151,7 +151,7 @@ def render_dashboard(care_type_filter: str | None):
             start_date=start_date,
             end_date=end_date
         )
-        st.plotly_chart(followup_donut(reason_df), width="stretch", config={"displayModeBar": False})
+        st.plotly_chart(followup_bar_chart(reason_df), width="stretch", config={"displayModeBar": False})
 
     # ── Row 2: Top Follow-Up Clients (deduplicated) ────────────────────────────
     st.markdown(

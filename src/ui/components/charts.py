@@ -69,37 +69,42 @@ def rolling_trend_chart(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def followup_donut(df: pd.DataFrame) -> go.Figure:
-    """Donut chart for follow-up reason breakdown."""
+def followup_bar_chart(df: pd.DataFrame) -> go.Figure:
+    """Horizontal bar chart for follow-up reason breakdown."""
     if df.empty:
         return _empty_fig("No follow-up data")
 
-    colors = ["#4f8ef7", "#ef4444", "#f59e0b", "#a78bfa", "#22c55e", "#06b6d4", "#f97316"]
+    # Sort ascending so largest count appears on top in the plot
+    df = df.copy().sort_values("count", ascending=True)
+
     fig = go.Figure(
-        go.Pie(
-            labels=df["reason"],
-            values=df["count"],
-            hole=0.62,
-            marker=dict(colors=colors, line=dict(width=2, color="#0f1117")),
-            textinfo="percent",
-            textfont=dict(size=11),
-            hovertemplate="<b>%{label}</b><br>Count: %{value}<br>%{percent}<extra></extra>",
+        go.Bar(
+            x=df["count"],
+            y=df["reason"],
+            orientation="h",
+            marker_color="#ef4444",  # Red accents for follow-up items
+            marker_line_width=0,
+            text=df["count"],
+            textposition="auto",
+            hovertemplate="<b>%{y}</b><br>Count: %{x}<extra></extra>",
         )
     )
-    _donut_layout = {k: v for k, v in _LAYOUT_DEFAULTS.items() if k not in ("legend", "margin")}
+    _bar_layout = {k: v for k, v in _LAYOUT_DEFAULTS.items() if k not in ("legend", "margin")}
     fig.update_layout(
-        **_donut_layout,
+        **_bar_layout,
         height=280,
-        showlegend=True,
-        legend=dict(
-            orientation="v",
-            yanchor="middle",
-            y=0.5,
-            xanchor="left",
-            x=1.02,
-            font=dict(size=10),
+        xaxis=dict(
+            gridcolor="#2a2d3e",
+            tickfont=dict(size=11, color="#c8cfe0"),
+            linecolor="#2a2d3e",
+            title="Count",
         ),
-        margin=dict(l=0, r=120, t=16, b=0),
+        yaxis=dict(
+            gridcolor="#2a2d3e",
+            tickfont=dict(size=11, color="#c8cfe0"),
+            linecolor="#2a2d3e",
+        ),
+        margin=dict(l=130, r=20, t=10, b=10),
     )
     return fig
 

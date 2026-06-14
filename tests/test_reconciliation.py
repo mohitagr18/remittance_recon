@@ -55,6 +55,10 @@ class TestComputeResult:
     def test_none_treated_as_zero(self):
         assert compute_result(None, None, None) == ("No Payroll Hours", None)
 
+    def test_negative_hours_payer_reversal(self):
+        assert compute_result(35, -5, 35) == ("Follow up", "Payer Reversal")
+        assert compute_result(35, 35, -10) == ("Follow up", "Payer Reversal")
+
 
 class TestComputeDeltas:
     def test_exact_match(self):
