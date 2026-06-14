@@ -87,6 +87,10 @@ if not skilled_clients and not unskilled_clients:
     st.info("No clients found. Run the ETL pipeline first.", icon="ℹ️")
     st.stop()
 
+# ── Sidebar filters ─────────────────────────────────────────────────────────
+st.sidebar.markdown("**Filters**")
+show_archived = st.sidebar.checkbox("Show Archived (Older than 1 year and 1 week)", value=False, key="cl_show_archived")
+
 # ── Client selectors ─────────────────────────────────────────────────────────
 col_s, col_u = st.columns(2)
 
@@ -182,26 +186,33 @@ if not client_recon.empty:
         "<div class='section-header'><h3>📊 Weekly Reconciliation Trend</h3></div>",
         unsafe_allow_html=True,
     )
-    num_weeks = len(client_recon)
-    if num_weeks > 20:
-        st.markdown(
-            f"""
-            <style>
-            .element-container:has(div[data-testid="stPlotlyChart"]) {{
-                overflow-x: auto !important;
-            }}
-            div[data-testid="stPlotlyChart"] {{
-                min-width: {num_weeks * 45}px !important;
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True
+
+    if not show_archived:
+        import datetime
+        one_year_and_week_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
+        client_recon = client_recon[client_recon["week_start_date"] >= one_year_and_week_ago]
+
+    if not client_recon.empty:
+        num_weeks = len(client_recon)
+        if num_weeks > 20:
+            st.markdown(
+                f"""
+                <style>
+                .element-container:has(div[data-testid="stPlotlyChart"]) {{
+                    overflow-x: auto !important;
+                }}
+                div[data-testid="stPlotlyChart"] {{
+                    min-width: {num_weeks * 45}px !important;
+                }}
+                </style>
+                """,
+                unsafe_allow_html=True
+            )
+        st.plotly_chart(
+            client_billed_paid_chart(client_recon),
+            use_container_width=True,
+            config={"displayModeBar": False},
         )
-    st.plotly_chart(
-        client_billed_paid_chart(client_recon),
-        use_container_width=True,
-        config={"displayModeBar": False},
-    )
 
 # ── Full remittance ledger ──────────────────────────────────────────────────
 st.markdown(
@@ -219,6 +230,12 @@ if not summary_df.empty and "client_name_remittance" in summary_df.columns:
 ledger_df = queries.client_ledger(conn, rem_name, sort_asc=True)
 if ledger_df.empty:
     ledger_df = queries.client_ledger(conn, selected, sort_asc=True)
+
+# Apply Archive filter to Payment Ledger
+if not show_archived:
+    import datetime
+    one_year_and_week_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
+    ledger_df = ledger_df[pd.to_datetime(ledger_df["first_dos"]) >= pd.to_datetime(one_year_and_week_ago)]
 
 if not ledger_df.empty:
     show_unpaid_only = st.checkbox("⏳ Show unpaid/pending line items only (where Paid < Billed)", value=False, key="ledger_show_unpaid")

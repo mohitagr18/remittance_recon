@@ -47,9 +47,13 @@ st.markdown(
 
 # ── Sidebar filters ─────────────────────────────────────────────────────────
 st.sidebar.markdown("**Filters**")
-week    = week_filter("wr_week")
+client_options = ["All Clients"] + queries.all_clients(conn)
+selected_client = st.sidebar.selectbox("🔍 Client Name", options=client_options, index=0, key="wr_client_name")
+show_archived_val = st.session_state.get("wr_show_archived", False)
+week    = week_filter("wr_week", show_archived=show_archived_val)
 ins     = insurance_filter("wr_ins")
 fu_only = st.sidebar.toggle("Follow-Up Only", value=False, key="wr_fu_only")
+show_archived = st.sidebar.checkbox("Show Archived (Older than 1 year and 1 week)", value=False, key="wr_show_archived")
 
 # ── Load data ───────────────────────────────────────────────────────────────
 df = queries.weekly_recon_detail(
@@ -58,6 +62,16 @@ df = queries.weekly_recon_detail(
     insurance=ins if ins else None,
     follow_up_only=fu_only,
 )
+
+# Apply Archive filter (hide rows older than 1 year & 1 week by default)
+if not show_archived:
+    import datetime
+    one_year_and_week_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
+    df = df[df["week_start"] >= one_year_and_week_ago]
+
+# Apply Client Name filter
+if selected_client != "All Clients":
+    df = df[df["client"] == selected_client]
 
 if df.empty:
     st.info("No reconciliation data for the selected filters. Run the ETL pipeline or adjust filters.", icon="ℹ️")
@@ -145,7 +159,7 @@ show_cols = [
     "payroll_hours", "billed_hours", "paid_hours",
     "pending_hrs", "payroll_vs_billed",
     "status", "reason",
-    "is_copay_client", "yash_comments", "connie_comments",
+    "is_copay_client",
 ]
 show_cols = [c for c in show_cols if c in display.columns]
 
@@ -170,8 +184,6 @@ selection = st.dataframe(
         "status":            st.column_config.TextColumn("Status",       width="small"),
         "reason":            st.column_config.TextColumn("Reason",       width="medium"),
         "is_copay_client":   st.column_config.CheckboxColumn("Copay",    width="small"),
-        "yash_comments":     st.column_config.TextColumn("Yash Notes",   width="medium"),
-        "connie_comments":   st.column_config.TextColumn("Connie Notes", width="medium"),
     },
     on_select="rerun",
     selection_mode="single-row",

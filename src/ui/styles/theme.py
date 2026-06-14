@@ -110,7 +110,7 @@ def inject_css():
             background: linear-gradient(135deg, #1e2130 0%, #252840 100%);
             border: 1px solid #2a2d3e;
             border-radius: 12px;
-            padding: 20px 22px 16px;
+            padding: 24px 24px 22px;
             position: relative;
             overflow: hidden;
             transition: transform 0.2s ease, border-color 0.2s ease;
@@ -131,9 +131,9 @@ def inject_css():
         .kpi-card.yellow::before { background: #f59e0b; }
         .kpi-card.red::before    { background: #ef4444; }
         .kpi-card.purple::before { background: #a78bfa; }
-
+ 
         .kpi-label {
-            font-size: 0.72rem;
+            font-size: 0.8rem;
             color: #8892a4;
             text-transform: uppercase;
             letter-spacing: 0.08em;
@@ -141,7 +141,7 @@ def inject_css():
             margin-bottom: 8px;
         }
         .kpi-value {
-            font-size: 1.9rem;
+            font-size: 2.2rem;
             font-weight: 700;
             color: #e8eaf0;
             line-height: 1;

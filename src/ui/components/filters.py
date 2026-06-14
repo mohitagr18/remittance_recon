@@ -18,22 +18,37 @@ def _get_conn():
     return st.session_state.db_conn
 
 
-def week_filter(key: str = "week_filter") -> str | None:
+def week_filter(key: str = "week_filter", show_archived: bool = True) -> str | None:
     """Week picker — returns selected week_start_date string or None (all weeks)."""
+    import datetime
+    import pandas as pd
     conn = _get_conn()
     weeks_df = queries.available_weeks(conn)
     if weeks_df.empty:
         st.sidebar.info("No weeks loaded yet.")
         return None
 
-    options = ["All Weeks"] + [
-        f"{row.week_start_date} → {row.week_end_date}"
-        for _, row in weeks_df.iterrows()
-    ]
+    if not show_archived:
+        one_year_and_week_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
+        weeks_df = weeks_df[pd.to_datetime(weeks_df["week_start_date"]).dt.strftime("%Y-%m-%d") >= one_year_and_week_ago]
+
+    # Sort ascending so that the list starts with the oldest week
+    weeks_df = weeks_df.sort_values(by="week_start_date", ascending=True)
+
+    label_to_date = {}
+    options = ["All Weeks"]
+    for _, row in weeks_df.iterrows():
+        s_dt = pd.to_datetime(row.week_start_date)
+        e_dt = pd.to_datetime(row.week_end_date)
+        label = f"{s_dt.strftime('%b %d, %Y')} – {e_dt.strftime('%b %d, %Y')}"
+        
+        options.append(label)
+        label_to_date[label] = s_dt.strftime("%Y-%m-%d")
+
     choice = st.sidebar.selectbox("📅 Week", options, key=key)
     if choice == "All Weeks":
         return None
-    return choice.split(" → ")[0]
+    return label_to_date.get(choice)
 
 
 def insurance_filter(key: str = "ins_filter", multi: bool = False) -> str | None | list[str]:

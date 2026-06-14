@@ -58,18 +58,25 @@ st.sidebar.markdown(
 st.sidebar.markdown("**Filters**")
 
 # Date range selection
+import datetime
+
 date_preset = st.sidebar.selectbox(
     "📅 Date Period",
-    ["Year to Date (YTD)", "All Time", "Custom Range"],
+    ["Year to Date (YTD)", "Month to Date (MTD)", "Last 4 Weeks", "All Time", "Custom Range"],
     index=0,
     key="dash_date_preset"
 )
 
 start_date = None
 end_date = None
+today = datetime.date.today()
 
 if date_preset == "Year to Date (YTD)":
     start_date = f"{max_year}-01-01"
+elif date_preset == "Month to Date (MTD)":
+    start_date = today.replace(day=1).strftime("%Y-%m-%d")
+elif date_preset == "Last 4 Weeks":
+    start_date = (today - datetime.timedelta(weeks=4)).strftime("%Y-%m-%d")
 elif date_preset == "Custom Range":
     col_s, col_e = st.sidebar.columns(2)
     with col_s:
@@ -119,12 +126,12 @@ def render_dashboard(care_type_filter: str | None):
     rate           = float(row.get("collection_rate_pct", 0) or 0)
 
     render_kpi_row([
-        {"label": "Total Clients",   "value": f"{total_clients:,}",  "sub": "unique active",       "color": "blue"},
-        {"label": "Billed Hours",    "value": f"{billed_hrs:,.1f}",  "sub": "hrs submitted",       "color": "purple"},
-        {"label": "Paid Hours",      "value": f"{paid_hrs:,.1f}",    "sub": "hrs collected",       "color": "green"},
-        {"label": "Pending Hours",   "value": f"{pending_hrs:,.1f}", "sub": "billed − paid",       "color": "yellow"},
-        {"label": "Follow-Ups",      "value": str(followup_count),   "sub": "need attention",      "color": "red"},
-        {"label": "Collection Rate", "value": f"{rate:.1f}%",        "sub": "target ≥ 95%",        "color": "green" if rate >= 95 else "red"},
+        {"label": "Total Clients",   "value": f"{total_clients:,}",  "sub": "", "color": "blue"},
+        {"label": "Billed Hours",    "value": f"{billed_hrs:,.0f}",  "sub": "", "color": "purple"},
+        {"label": "Paid Hours",      "value": f"{paid_hrs:,.0f}",    "sub": "", "color": "green"},
+        {"label": "Pending Hours",   "value": f"{pending_hrs:,.0f}", "sub": "", "color": "yellow"},
+        {"label": "Follow-Ups",      "value": str(followup_count),   "sub": "", "color": "red"},
+        {"label": "Collection Rate", "value": f"{rate:.0f}%",        "sub": "", "color": "green" if rate >= 95 else "red"},
     ])
 
     st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
@@ -134,7 +141,7 @@ def render_dashboard(care_type_filter: str | None):
 
     with col_left:
         st.markdown(
-            "<div class='section-header'><h3>📈 Weekly Reconciliation Trend</h3></div>",
+            "<div class='section-header'><h3>📈 12-Week Recon Trend</h3></div>",
             unsafe_allow_html=True,
         )
         trend_df = queries.rolling_trend(
