@@ -622,6 +622,39 @@ def ingested_files_list(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     return conn.execute(sql).df()
 
 
+def ingested_payroll_files_list(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """Return list of all ingested payroll files."""
+    sql = """
+        SELECT filename, row_count, week_start, week_end, ingested_at, file_hash
+        FROM ingested_files
+        WHERE file_type = 'payroll'
+        ORDER BY ingested_at DESC
+    """
+    return conn.execute(sql).df()
+
+
+def ingested_remittance_files_list(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """Return list of all ingested remittance files with min/max DOS dates."""
+    sql = """
+        SELECT 
+            i.filename, 
+            i.row_count, 
+            COALESCE(i.week_start, r.min_dos) AS min_date,
+            COALESCE(i.week_end, r.max_dos) AS max_date,
+            i.ingested_at, 
+            i.file_hash
+        FROM ingested_files i
+        LEFT JOIN (
+            SELECT source_file, MIN(first_dos) AS min_dos, MAX(last_dos) AS max_dos
+            FROM remittance
+            GROUP BY source_file
+        ) r ON i.filename = r.source_file
+        WHERE i.file_type = 'remittance'
+        ORDER BY i.ingested_at DESC
+    """
+    return conn.execute(sql).df()
+
+
 def _week_insurance_filter(
     week_start: str | None,
     insurance: str | None,

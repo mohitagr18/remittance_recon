@@ -13,10 +13,12 @@ if str(_ROOT) not in sys.path:
 
 import streamlit as st
 import pandas as pd
+import importlib
 
 from src.ui.styles.theme import inject_css
 from src.ui.components.filters import _get_conn
 from src.db import queries
+importlib.reload(queries)
 from src.etl.file_watcher import scan_input_dir
 from src.etl.pipeline import run_pipeline
 from src.config import cfg
@@ -94,31 +96,58 @@ else:
 
 # ── Ingestion History ──────────────────────────────────────────────────────
 st.markdown(
-    "<div style='margin-top:2rem;' class='section-header'><h3>📜 Ingestion Logs & History</h3></div>",
+    "<div style='margin-top:2rem;' class='section-header'><h3>📜 Payroll Ingestion Logs</h3></div>",
     unsafe_allow_html=True,
 )
 
-history_df = queries.ingested_files_list(conn)
+payroll_df = queries.ingested_payroll_files_list(conn)
 
-if history_df.empty:
-    st.info("No files have been recorded in the database yet. Run the scanner or ingestion above.", icon="ℹ️")
+if payroll_df.empty:
+    st.info("No payroll files have been ingested yet.", icon="ℹ️")
 else:
     # Formatting
-    history_df["ingested_at"] = pd.to_datetime(history_df["ingested_at"]).dt.strftime("%Y-%m-%d %H:%M:%S")
-    history_df["file_type"] = history_df["file_type"].map(lambda t: "Payroll" if t == "payroll" else "Remittance" if t == "remittance" else t)
-    history_df["week_start"] = pd.to_datetime(history_df["week_start"]).dt.strftime("%Y-%m-%d").fillna("—")
-    history_df["week_end"] = pd.to_datetime(history_df["week_end"]).dt.strftime("%Y-%m-%d").fillna("—")
+    payroll_df["ingested_at"] = pd.to_datetime(payroll_df["ingested_at"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    payroll_df["week_start"] = pd.to_datetime(payroll_df["week_start"]).dt.strftime("%Y-%m-%d").fillna("—")
+    payroll_df["week_end"] = pd.to_datetime(payroll_df["week_end"]).dt.strftime("%Y-%m-%d").fillna("—")
     
     st.dataframe(
-        history_df,
+        payroll_df,
         use_container_width=True,
         hide_index=True,
         column_config={
             "filename":     st.column_config.TextColumn("Filename", width="medium"),
-            "file_type":    st.column_config.TextColumn("Type", width="small"),
             "row_count":    st.column_config.NumberColumn("Row Count"),
             "week_start":   st.column_config.TextColumn("Week Start"),
             "week_end":     st.column_config.TextColumn("Week End"),
+            "ingested_at":  st.column_config.TextColumn("Ingested At"),
+            "file_hash":    st.column_config.TextColumn("SHA-256 Hash", width="medium")
+        }
+    )
+
+st.markdown(
+    "<div style='margin-top:2rem;' class='section-header'><h3>📜 Remittance Ingestion Logs</h3></div>",
+    unsafe_allow_html=True,
+)
+
+remit_df = queries.ingested_remittance_files_list(conn)
+
+if remit_df.empty:
+    st.info("No remittance files have been ingested yet.", icon="ℹ️")
+else:
+    # Formatting
+    remit_df["ingested_at"] = pd.to_datetime(remit_df["ingested_at"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    remit_df["min_date"] = pd.to_datetime(remit_df["min_date"]).dt.strftime("%Y-%m-%d").fillna("—")
+    remit_df["max_date"] = pd.to_datetime(remit_df["max_date"]).dt.strftime("%Y-%m-%d").fillna("—")
+    
+    st.dataframe(
+        remit_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "filename":     st.column_config.TextColumn("Filename", width="medium"),
+            "row_count":    st.column_config.NumberColumn("Row Count"),
+            "min_date":     st.column_config.TextColumn("Min Date"),
+            "max_date":     st.column_config.TextColumn("Max Date"),
             "ingested_at":  st.column_config.TextColumn("Ingested At"),
             "file_hash":    st.column_config.TextColumn("SHA-256 Hash", width="medium")
         }

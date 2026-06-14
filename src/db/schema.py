@@ -121,8 +121,8 @@ CREATE TABLE IF NOT EXISTS ingested_files (
     file_hash     VARCHAR NOT NULL,   -- SHA-256 of file content
     file_path     VARCHAR,
     row_count     INTEGER,
-    week_start    DATE,               -- populated for payroll files
-    week_end      DATE,
+    week_start    DATE,               -- populated for payroll files (week start) and remittance files (min date)
+    week_end      DATE,               -- populated for payroll files (week end) and remittance files (max date)
     ingested_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (filename, file_hash)      -- same filename+hash = already ingested
 );

@@ -210,8 +210,17 @@ def run_pipeline(
                 all_remittance = parse_remittance(f.path)
                 _write_remittance_incremental(conn, all_remittance)
                 
+                # Calculate min/max service dates
+                valid_first_dos = [r["first_dos"] for r in all_remittance if r.get("first_dos") is not None]
+                valid_last_dos = [r["last_dos"] for r in all_remittance if r.get("last_dos") is not None]
+                min_date = min(valid_first_dos) if valid_first_dos else None
+                max_date = max(valid_last_dos) if valid_last_dos else None
+                
                 # Register in database
-                _mark_file_ingested(conn, f.filename, "remittance", f.file_hash, len(all_remittance))
+                _mark_file_ingested(
+                    conn, f.filename, "remittance", f.file_hash, len(all_remittance),
+                    week_start=min_date, week_end=max_date
+                )
                 
                 # Archive file (skip if running tests)
                 if not (payroll_path or remittance_path) and not IS_TEST:
