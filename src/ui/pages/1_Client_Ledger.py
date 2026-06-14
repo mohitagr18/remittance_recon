@@ -148,18 +148,14 @@ if not ledger_df.empty:
 if ledger_df.empty:
     st.info("No remittance records found for this client.", icon="ℹ️")
 else:
-    def _color_row(val):
-        if isinstance(val, str):
-            if "Paid" in val:
-                return "color: #4ade80"
-            if "Denial" in val:
-                return "color: #f87171"
-        return ""
+    # Calculate deltas for hours and dollars
+    ledger_df["hrs_delta"] = ledger_df["billed_hours"] - ledger_df["paid_hours"]
+    ledger_df["amt_delta"] = ledger_df["charge_amount"] - ledger_df["payment_amount"]
 
     display_cols = [c for c in [
         "payment_date", "tcn", "first_dos", "last_dos",
-        "transaction_type", "charge_amount", "payment_amount",
-        "billed_hours", "paid_hours", "insurance", "match_status",
+        "transaction_type", "charge_amount", "payment_amount", "amt_delta",
+        "billed_hours", "paid_hours", "hrs_delta", "insurance", "match_status",
     ] if c in ledger_df.columns]
 
     st.dataframe(
@@ -172,12 +168,15 @@ else:
             "first_dos":        st.column_config.DateColumn("First DOS"),
             "last_dos":         st.column_config.DateColumn("Last DOS"),
             "transaction_type": st.column_config.TextColumn("Transaction", width="medium"),
-            "charge_amount":    st.column_config.NumberColumn("Charge", format="$%.2f"),
-            "payment_amount":   st.column_config.NumberColumn("Payment", format="$%.2f"),
+            "charge_amount":    st.column_config.NumberColumn("Billed $", format="$%.2f"),
+            "payment_amount":   st.column_config.NumberColumn("Paid $", format="$%.2f"),
+            "amt_delta":        st.column_config.NumberColumn("$ Delta", format="$%.2f"),
             "billed_hours":     st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
             "paid_hours":       st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
+            "hrs_delta":        st.column_config.NumberColumn("Hrs Delta", format="%.1f"),
             "insurance":        st.column_config.TextColumn("Insurance", width="small"),
             "match_status":     st.column_config.TextColumn("Status", width="small"),
         },
     )
     st.caption(f"{len(ledger_df):,} remittance records found")
+

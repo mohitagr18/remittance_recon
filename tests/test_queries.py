@@ -72,3 +72,26 @@ class TestQueries:
         assert "first_dos" in df.columns
         assert "pending_hours" in df.columns
 
+    def test_recent_payments(self, conn):
+        df = q.recent_payments(conn)
+        assert len(df) >= 0
+        if len(df) > 0:
+            assert "client" in df.columns
+            assert "billed_hrs" in df.columns
+            assert "paid_hrs" in df.columns
+            assert "billed_amt" in df.columns
+            assert "paid_amt" in df.columns
+
+    def test_recent_denials(self, conn):
+        df = q.recent_denials(conn)
+        assert len(df) >= 0
+        if len(df) > 0:
+            assert "client" in df.columns
+            assert "billed_hrs" in df.columns
+            assert "paid_hrs" in df.columns
+            assert "pending_hrs" in df.columns
+            assert "billed_amt" in df.columns
+            assert "paid_amt" in df.columns
+            assert "amt_delta" in df.columns
+
+

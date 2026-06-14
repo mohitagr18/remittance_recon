@@ -817,4 +817,21 @@ pytest tests/ -v
 ### Component 4: Client Ledger Page — `src/ui/pages/1_Client_Ledger.py`
 - Update to use `client_weekly_recon_with_dos()` to feed `client_billed_paid_chart()` with the new fields.
 
+---
+
+# Phase 5: payment ledger deltas and side-by-side recent transactions
+
+## Proposed Changes
+
+### Component 1: Queries — `src/db/queries.py`
+- Add `recent_payments()` and `recent_denials()` queries to fetch latest claims matching active dashboard filters.
+
+### Component 2: COO Dashboard UI — `src/ui/app.py`
+- Add deltas (hour and dollar) to the client detail payment ledger display.
+- Add side-by-side "Recent Payments" and "Recent Denials" tables at the bottom of the Executive Dashboard.
+
+### Component 3: Client Ledger Page — `src/ui/pages/1_Client_Ledger.py`
+- Add deltas (hour and dollar) to the client ledger payment history table.
+
+
 

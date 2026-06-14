@@ -645,3 +645,110 @@ def _week_insurance_filter(
     if not clauses:
         return ""
     return prefix + " " + " AND ".join(clauses)
+
+
+# ── Recent Payments & Denials ──────────────────────────────────────────────────
+
+def recent_payments(
+    conn: duckdb.DuckDBPyConnection,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    insurance: str | None = None,
+    care_type: str | None = None,
+    limit: int = 10,
+) -> pd.DataFrame:
+    """Latest payment line items matching active dashboard filters."""
+    clauses = ["is_latest = True", "payment_amount > 0"]
+    params = []
+    
+    if start_date:
+        clauses.append("first_dos >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("first_dos <= ?")
+        params.append(end_date)
+    if insurance:
+        clauses.append("insurance = ?")
+        params.append(insurance)
+    if care_type:
+        clauses.append("""
+            CASE 
+                WHEN (client_name_combined LIKE '%LPN%' OR client_name_combined LIKE '%RN%' OR insurance LIKE '%PDN%') THEN 'Skilled'
+                ELSE 'Unskilled'
+            END = ?
+        """)
+        params.append(care_type)
+        
+    where = "WHERE " + " AND ".join(clauses)
+    
+    sql = f"""
+        SELECT
+            client_name_combined AS client,
+            payment_date,
+            billed_hours AS billed_hrs,
+            paid_hours AS paid_hrs,
+            charge_amount AS billed_amt,
+            payment_amount AS paid_amt,
+            first_dos
+        FROM remittance
+        {where}
+        ORDER BY first_dos DESC, payment_date DESC
+        LIMIT {limit}
+    """
+    return conn.execute(sql, params).df()
+
+
+def recent_denials(
+    conn: duckdb.DuckDBPyConnection,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    insurance: str | None = None,
+    care_type: str | None = None,
+    limit: int = 10,
+) -> pd.DataFrame:
+    """Latest denial/unpaid line items matching active dashboard filters."""
+    clauses = [
+        "is_latest = True",
+        "(transaction_type = 'Denial/Reversal' OR (payment_amount = 0 AND charge_amount > 0))"
+    ]
+    params = []
+    
+    if start_date:
+        clauses.append("first_dos >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("first_dos <= ?")
+        params.append(end_date)
+    if insurance:
+        clauses.append("insurance = ?")
+        params.append(insurance)
+    if care_type:
+        clauses.append("""
+            CASE 
+                WHEN (client_name_combined LIKE '%LPN%' OR client_name_combined LIKE '%RN%' OR insurance LIKE '%PDN%') THEN 'Skilled'
+                ELSE 'Unskilled'
+            END = ?
+        """)
+        params.append(care_type)
+        
+    where = "WHERE " + " AND ".join(clauses)
+    
+    sql = f"""
+        SELECT
+            client_name_combined AS client,
+            payment_date,
+            billed_hours AS billed_hrs,
+            paid_hours AS paid_hrs,
+            ROUND(billed_hours - paid_hours, 1) AS pending_hrs,
+            charge_amount AS billed_amt,
+            payment_amount AS paid_amt,
+            ROUND(charge_amount - payment_amount, 2) AS amt_delta,
+            first_dos
+        FROM remittance
+        {where}
+        ORDER BY first_dos DESC, payment_date DESC
+        LIMIT {limit}
+    """
+    return conn.execute(sql, params).df()
+
+
