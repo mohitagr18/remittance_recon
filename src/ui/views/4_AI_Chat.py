@@ -13,7 +13,7 @@ if str(_ROOT) not in sys.path:
 
 import streamlit as st
 
-st.set_page_config(page_title="AI Chat", page_icon="🤖", layout="wide")
+
 
 from src.ui.styles.theme import inject_css
 from src.ui.components.filters import _get_conn

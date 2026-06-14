@@ -16,11 +16,7 @@ if str(_ROOT) not in sys.path:
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(
-    page_title="Weekly Recon",
-    page_icon="📋",
-    layout="wide",
-)
+
 
 from src.ui.styles.theme import inject_css
 from src.ui.components.filters import week_filter, insurance_filter, _get_conn

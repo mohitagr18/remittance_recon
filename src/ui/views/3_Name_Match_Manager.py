@@ -14,7 +14,7 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Name Match Manager", page_icon="⚙️", layout="wide")
+
 
 from src.ui.styles.theme import inject_css
 from src.ui.components.filters import _get_conn

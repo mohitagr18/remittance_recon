@@ -23,7 +23,7 @@ from src.etl.file_watcher import scan_input_dir
 from src.etl.pipeline import run_pipeline
 from src.config import cfg
 
-st.set_page_config(page_title="Data Management", page_icon="⚙️", layout="wide")
+
 inject_css()
 
 # ── Header ─────────────────────────────────────────────────────────────────

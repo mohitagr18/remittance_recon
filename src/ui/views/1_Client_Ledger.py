@@ -14,7 +14,7 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Client Ledger", page_icon="📒", layout="wide")
+
 
 import importlib
 from src.ui.styles.theme import inject_css
