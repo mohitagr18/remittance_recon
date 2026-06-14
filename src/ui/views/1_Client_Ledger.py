@@ -87,6 +87,16 @@ if not skilled_clients and not unskilled_clients:
     st.info("No clients found. Run the ETL pipeline first.", icon="ℹ️")
     st.stop()
 
+# Initialize selectbox state from selected_client_ledger if set
+if st.session_state.selected_client_ledger:
+    client = st.session_state.selected_client_ledger
+    if client in skilled_clients:
+        st.session_state.skilled_selector = client
+        st.session_state.unskilled_selector = None
+    elif client in unskilled_clients:
+        st.session_state.unskilled_selector = client
+        st.session_state.skilled_selector = None
+
 # ── Sidebar filters ─────────────────────────────────────────────────────────
 st.sidebar.markdown("**Filters**")
 show_archived = st.sidebar.checkbox("Show Archived (Older than 1 year and 1 week)", value=False, key="cl_show_archived")
