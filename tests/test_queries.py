@@ -49,3 +49,26 @@ class TestQueries:
     def test_get_copay_table(self, conn):
         df = q.get_copay_table(conn)
         assert len(df) > 0
+
+    def test_client_ledger(self, conn):
+        # Find a client in all reconciliation
+        recon = q.all_reconciliation(conn)
+        client = recon.dropna(subset=["client_name_remittance"]).iloc[0]["client_name_remittance"]
+        
+        # Test basic ledger retrieval
+        df = q.client_ledger(conn, client)
+        assert len(df) >= 0
+
+        # Test sorted and filtered retrieval
+        df_sorted = q.client_ledger(conn, client, sort_asc=True)
+        if len(df_sorted) > 1:
+            assert df_sorted.iloc[0]["first_dos"] <= df_sorted.iloc[-1]["first_dos"]
+
+    def test_client_weekly_recon_with_dos(self, conn):
+        recon = q.all_reconciliation(conn)
+        client = recon.dropna(subset=["client_name_payroll"]).iloc[0]["client_name_payroll"]
+        df = q.client_weekly_recon_with_dos(conn, client)
+        assert len(df) > 0
+        assert "first_dos" in df.columns
+        assert "pending_hours" in df.columns
+

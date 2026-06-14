@@ -165,11 +165,30 @@ def client_billed_paid_chart(df: pd.DataFrame) -> go.Figure:
         return _empty_fig("No payment history")
 
     df = df.copy()
-    df["week"] = pd.to_datetime(df["week_start_date"]).dt.strftime("%b %d")
+    
+    # Check if first_dos is available
+    if "first_dos" in df.columns:
+        # Convert first_dos to datetime to ensure correct date sorting
+        df["first_dos_dt"] = pd.to_datetime(df["first_dos"])
+        df = df.sort_values(by="first_dos_dt", ascending=True)
+        df["x_axis"] = df["first_dos_dt"].dt.strftime("%b %d, %Y")
+    else:
+        df = df.sort_values(by="week_start_date", ascending=True)
+        df["x_axis"] = pd.to_datetime(df["week_start_date"]).dt.strftime("%b %d")
+
+    # Determine pending hours
+    if "pending_hours" in df.columns:
+        pending_vals = df["pending_hours"]
+    elif "pending_hrs" in df.columns:
+        pending_vals = df["pending_hrs"]
+    else:
+        pending_vals = df["billed_hours"] - df["paid_hours"]
 
     fig = go.Figure()
-    fig.add_bar(name="Billed", x=df["week"], y=df["billed_hours"], marker_color="#4f8ef7")
-    fig.add_bar(name="Paid", x=df["week"], y=df["paid_hours"], marker_color="#22c55e")
+    fig.add_bar(name="Billed", x=df["x_axis"], y=df["billed_hours"], marker_color="#4f8ef7")
+    fig.add_bar(name="Paid", x=df["x_axis"], y=df["paid_hours"], marker_color="#22c55e")
+    fig.add_bar(name="Pending", x=df["x_axis"], y=pending_vals, marker_color="#f59e0b")
+    
     fig.update_layout(
         **_LAYOUT_DEFAULTS,
         barmode="group",
@@ -178,6 +197,7 @@ def client_billed_paid_chart(df: pd.DataFrame) -> go.Figure:
         yaxis=dict(gridcolor="#2a2d3e", title="Hours", tickfont=dict(color="#c8cfe0"), linecolor="#2a2d3e"),
     )
     return fig
+
 
 
 def _empty_fig(msg: str) -> go.Figure:

@@ -7,6 +7,8 @@ Every function returns a DuckDB relation or DataFrame via an open connection.
 from __future__ import annotations
 
 import duckdb
+import pandas as pd
+
 
 
 # ── Weekly Summary ────────────────────────────────────────────────────────────
@@ -363,9 +365,37 @@ def rolling_trend(
 
 # ── Client Ledger ─────────────────────────────────────────────────────────────
 
-def client_ledger(conn: duckdb.DuckDBPyConnection, client_name: str):
+def client_ledger(
+    conn: duckdb.DuckDBPyConnection,
+    client_name: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    sort_asc: bool = True,
+):
+
     """All remittance records for a given client (remittance name match)."""
-    sql = """
+    import re
+    stripped_name = re.sub(r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$", "", client_name, flags=re.IGNORECASE).strip()
+
+    clauses = [
+        """(
+            UPPER(client_name_combined) IN (UPPER(?), UPPER(?)) 
+            OR UPPER(client_first_name || ' ' || client_last_name) IN (UPPER(?), UPPER(?))
+        )"""
+    ]
+    params = [client_name, stripped_name, client_name, stripped_name]
+
+    if start_date:
+        clauses.append("first_dos >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("first_dos <= ?")
+        params.append(end_date)
+
+    where = "WHERE " + " AND ".join(clauses)
+    order_by = "ORDER BY first_dos ASC, payment_date ASC" if sort_asc else "ORDER BY payment_date DESC, first_dos DESC"
+
+    sql = f"""
         SELECT
             payment_date,
             tcn,
@@ -380,18 +410,71 @@ def client_ledger(conn: duckdb.DuckDBPyConnection, client_name: str):
             insurance,
             match_status
         FROM remittance
-        WHERE UPPER(client_name_combined) = UPPER(?)
-           OR UPPER(client_first_name || ' ' || client_last_name) = UPPER(?)
-        ORDER BY payment_date DESC, first_dos DESC
+        {where}
+        {order_by}
     """
-    return conn.execute(sql, [client_name, client_name]).df()
+    return conn.execute(sql, params).df()
+
+
+def client_weekly_recon_with_dos(
+    conn: duckdb.DuckDBPyConnection,
+    client_name: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """
+    Get weekly reconciliation rows for a client, joined with the minimum first_dos 
+    for that client in each week from remittance, ordered by first_dos ascending.
+    """
+    import re
+    stripped_name = re.sub(r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$", "", client_name, flags=re.IGNORECASE).strip()
+
+    clauses = [
+        """(
+            UPPER(r.client_name_payroll) IN (UPPER(?), UPPER(?))
+            OR UPPER(r.client_name_remittance) IN (UPPER(?), UPPER(?))
+        )"""
+    ]
+    params = [client_name, stripped_name, client_name, stripped_name]
+
+    if start_date:
+        clauses.append("r.week_start_date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("r.week_start_date <= ?")
+        params.append(end_date)
+
+    where = "WHERE " + " AND ".join(clauses)
+
+    sql = f"""
+        SELECT
+            r.week_start_date,
+            r.week_end_date,
+            r.billed_hours,
+            r.paid_hours,
+            ROUND(r.billed_hours - r.paid_hours, 2) AS pending_hours,
+            COALESCE(MIN(rem.first_dos), r.week_start_date) AS first_dos
+        FROM reconciliation r
+        LEFT JOIN remittance rem ON (
+            UPPER(COALESCE(r.client_name_remittance, r.client_name_payroll)) = UPPER(rem.client_name_combined)
+            AND rem.first_dos BETWEEN r.week_start_date AND r.week_end_date
+            AND rem.is_latest = True
+        )
+        {where}
+        GROUP BY r.week_start_date, r.week_end_date, r.billed_hours, r.paid_hours
+        ORDER BY first_dos ASC
+    """
+    return conn.execute(sql, params).df()
 
 
 def client_summary(conn: duckdb.DuckDBPyConnection, client_name: str):
     """Aggregated YTD stats for a client (across all weeks in reconciliation)."""
+    import re
+    stripped_name = re.sub(r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$", "", client_name, flags=re.IGNORECASE).strip()
+
     sql = """
         SELECT
-            client_name_payroll,
+            COALESCE(MIN(client_name_payroll), MIN(client_name_remittance)) AS client_name_payroll,
             insurance,
             SUM(billed_hours)   AS ytd_billed_hrs,
             SUM(paid_hours)     AS ytd_paid_hrs,
@@ -400,10 +483,12 @@ def client_summary(conn: duckdb.DuckDBPyConnection, client_name: str):
             COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_weeks,
             ROUND(100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1) AS collection_rate_pct
         FROM reconciliation
-        WHERE UPPER(client_name_payroll) LIKE UPPER(?)
-        GROUP BY client_name_payroll, insurance
+        WHERE UPPER(client_name_payroll) IN (UPPER(?), UPPER(?))
+           OR UPPER(client_name_remittance) IN (UPPER(?), UPPER(?))
+        GROUP BY insurance
     """
-    return conn.execute(sql, [f"%{client_name}%"]).df()
+    return conn.execute(sql, [client_name, stripped_name, client_name, stripped_name]).df()
+
 
 
 # ── Distinct Weeks ────────────────────────────────────────────────────────────

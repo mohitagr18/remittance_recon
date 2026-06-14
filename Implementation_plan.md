@@ -796,3 +796,25 @@ pytest tests/ -v
 - Confirm the date preset selector sidebar options function correctly and filter all metrics across the start/end range.
 - Confirm that the number of follow-ups drops (from 32 down to 23) because "Billed Extra" claims that are fully paid are resolved to Good.
 
+---
+
+# Phase 4: COO Dashboard Enhancements & Client Detail View
+
+## Proposed Changes
+
+### Component 1: Queries — `src/db/queries.py`
+- Modify `client_ledger()` to support optional `start_date` and `end_date` date range parameters, and a `sort_asc` parameter.
+- Add `client_weekly_recon_with_dos()` to query weekly reconciliation joined with the minimum `first_dos` from `remittance` for each week.
+
+### Component 2: Charts — `src/ui/components/charts.py`
+- Update `client_billed_paid_chart()` to sort by `first_dos` ascending if present, format the x-axis with `First DOS`, and show a yellow bar for pending hours.
+
+### Component 3: COO Dashboard UI — `src/ui/app.py`
+- Remove the `"date_range"` (Week) column from the "Top Follow-Up Clients" table.
+- Implement selection tracking on the "Top Follow-Up Clients" table to navigate to a client detail view when a row is clicked.
+- Implement the client detail view showing the client summary card, updated "Weekly Billed vs Paid" plot, and the payment ledger table.
+
+### Component 4: Client Ledger Page — `src/ui/pages/1_Client_Ledger.py`
+- Update to use `client_weekly_recon_with_dos()` to feed `client_billed_paid_chart()` with the new fields.
+
+

@@ -16,10 +16,18 @@ import pandas as pd
 
 st.set_page_config(page_title="Client Ledger", page_icon="📒", layout="wide")
 
+import importlib
 from src.ui.styles.theme import inject_css
+
+from src.ui.components import charts
+importlib.reload(charts)
 from src.ui.components.charts import client_billed_paid_chart
+
 from src.ui.components.filters import _get_conn
+
 from src.db import queries
+importlib.reload(queries)
+
 
 inject_css()
 
@@ -102,10 +110,7 @@ if not summary_df.empty:
     )
 
 # ── Weekly billed vs paid chart ─────────────────────────────────────────────
-recon_df = queries.all_reconciliation(conn)
-client_recon = recon_df[
-    recon_df["client_name_payroll"].str.upper() == selected.upper()
-].copy() if not recon_df.empty else pd.DataFrame()
+client_recon = queries.client_weekly_recon_with_dos(conn, selected)
 
 if not client_recon.empty:
     st.markdown(
@@ -131,9 +136,14 @@ if not summary_df.empty and "client_name_remittance" in summary_df.columns:
     if alt:
         rem_name = alt
 
-ledger_df = queries.client_ledger(conn, rem_name)
+ledger_df = queries.client_ledger(conn, rem_name, sort_asc=True)
 if ledger_df.empty:
-    ledger_df = queries.client_ledger(conn, selected)
+    ledger_df = queries.client_ledger(conn, selected, sort_asc=True)
+
+if not ledger_df.empty:
+    show_unpaid_only = st.checkbox("⏳ Show unpaid/pending line items only (where Paid < Billed)", value=False, key="ledger_show_unpaid")
+    if show_unpaid_only:
+        ledger_df = ledger_df[ledger_df["paid_hours"] < ledger_df["billed_hours"]]
 
 if ledger_df.empty:
     st.info("No remittance records found for this client.", icon="ℹ️")
