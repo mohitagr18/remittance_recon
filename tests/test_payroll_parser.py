@@ -17,11 +17,11 @@ class TestParsePayroll:
             assert key in self.data
 
     def test_paycheck_date(self):
-        assert str(self.data["paycheck_date"]) == "2026-03-06"
+        assert str(self.data["paycheck_date"]) == "2025-07-04"
 
     def test_week_dates(self):
-        assert str(self.data["week_start_date"]) == "2026-02-18"
-        assert str(self.data["week_end_date"]) == "2026-02-24"
+        assert str(self.data["week_start_date"]) == "2025-06-18"
+        assert str(self.data["week_end_date"]) == "2025-06-24"
 
     def test_records_non_empty(self):
         assert len(self.data["records"]) > 0

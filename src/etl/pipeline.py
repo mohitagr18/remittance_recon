@@ -355,6 +355,110 @@ def _mark_file_ingested(
     log.info("Registered file in ingested_files: %s", filename)
 
 
+def _correct_reversal_rates(conn: duckdb.DuckDBPyConnection) -> None:
+    """
+    Detect and correct Payer Reversal Rate Mismatch errors in the remittance table.
+    We use a two-step lookup to find the correct hourly rate for a reversal:
+    1. If the parent claim exists in the database (matching reversal TCN minus suffix),
+       we use the parent claim's actual hourly rate.
+    2. Otherwise, we fall back to the client's most common positive paid hourly rate
+       (if they are classified as a Skilled client with standard rate >= 30.0).
+    """
+    log.info("Checking and correcting payer reversal rate mismatches in remittance...")
+    
+    # Step 1: Pre-calculate client standard positive rates for fallback
+    query_standard_rates = """
+        WITH client_rates AS (
+            SELECT 
+                client_name_combined,
+                round(payment_amount / paid_hours, 2) AS rate,
+                count(*) AS record_count
+            FROM remittance
+            WHERE payment_amount > 0 AND paid_hours > 0
+            GROUP BY client_name_combined, rate
+        ),
+        ranked_rates AS (
+            SELECT 
+                client_name_combined,
+                rate,
+                ROW_NUMBER() OVER (PARTITION BY client_name_combined ORDER BY record_count DESC) as rn
+            FROM client_rates
+        )
+        SELECT client_name_combined, rate
+        FROM ranked_rates
+        WHERE rn = 1 AND rate >= 30.0
+    """
+    skilled_client_rates = {}
+    try:
+        skilled_clients = conn.execute(query_standard_rates).fetchall()
+        skilled_client_rates = {name: float(rate) for name, rate in skilled_clients}
+    except Exception as e:
+        log.warning("Could not calculate standard rates: %s", e)
+
+    # Step 2: Query all potential reversal claims (where paid_hours < 0 or billed_hours < 0)
+    try:
+        reversals = conn.execute(
+            """SELECT id, client_name_combined, tcn, payment_amount, charge_amount, paid_hours, billed_hours 
+               FROM remittance 
+               WHERE paid_hours < 0 OR billed_hours < 0"""
+        ).fetchall()
+
+        corrected_count = 0
+        for r_id, client_name, tcn, p_amount, c_amount, paid_hours, billed_hours in reversals:
+            # Skip if hours are 0/None or not negative
+            p_hours_val = float(paid_hours or 0)
+            b_hours_val = float(billed_hours or 0)
+            
+            # Implied rates of the reversal
+            p_rate = abs(float(p_amount or 0) / p_hours_val) if p_hours_val != 0 else 0.0
+            c_rate = abs(float(c_amount or 0) / b_hours_val) if b_hours_val != 0 else 0.0
+            
+            # We only correct if either rate is Unskilled (< 30.0) but standard rate is Skilled (>= 30.0)
+            is_reversal_unskilled = (p_rate > 0.0 and p_rate < 30.0) or (c_rate > 0.0 and c_rate < 30.0)
+            
+            if not is_reversal_unskilled:
+                continue
+
+            # Try parent lookup first (TCN ends with R1/R2/A1 etc., strip last 2 chars)
+            parent_tcn = tcn[:-2] if len(tcn) > 2 and (tcn.endswith("R1") or tcn.endswith("R2") or tcn.endswith("A1")) else None
+            parent_rate = None
+            if parent_tcn:
+                parent_row = conn.execute(
+                    """SELECT payment_amount, paid_hours, charge_amount, billed_hours 
+                       FROM remittance WHERE tcn = ?""",
+                    [parent_tcn]
+                ).fetchone()
+                if parent_row:
+                    p_amt, p_hrs, c_amt, b_hrs = parent_row
+                    if p_hrs and float(p_hrs) != 0:
+                        parent_rate = abs(float(p_amt) / float(p_hrs))
+                    elif b_hrs and float(b_hrs) != 0:
+                        parent_rate = abs(float(c_amt) / float(b_hrs))
+
+            # Fallback to client standard rate if parent not found/no rate
+            if not parent_rate:
+                parent_rate = skilled_client_rates.get(client_name)
+
+            if parent_rate and parent_rate >= 30.0:
+                # Correct the hours
+                corrected_paid = round(float(p_amount or 0.0) / parent_rate, 4)
+                corrected_billed = round(float(c_amount or 0.0) / parent_rate, 4)
+                
+                conn.execute(
+                    """UPDATE remittance 
+                       SET paid_hours = ?, billed_hours = ? 
+                       WHERE id = ?""",
+                    [corrected_paid, corrected_billed, r_id]
+                )
+                corrected_count += 1
+                
+        if corrected_count > 0:
+            conn.commit()
+            log.info("Corrected %d payer reversal rate mismatch records in remittance.", corrected_count)
+    except Exception as e:
+        log.error("Error correcting reversal rate mismatches: %s", e)
+
+
 # ── Reconciliation rebuilding ─────────────────────────────────────────────────
 
 def rebuild_reconciliation(
@@ -366,7 +470,11 @@ def rebuild_reconciliation(
     Rebuild the entire reconciliation table based on the current contents of the
     payroll and remittance tables. Preserves analyst notes/overrides.
     """
+    # Run the reversal rate correction step first
+    _correct_reversal_rates(conn)
+
     log.info("Rebuilding reconciliation table...")
+
 
     # 1. Fetch and preserve existing overrides & comments
     existing_overrides = {}
@@ -473,17 +581,22 @@ def rebuild_reconciliation(
            FROM payroll"""
     ).fetchall()
 
-    # Get all remittance records
+    # Get all remittance records including charges and payments to compute rates
     raw_remit = conn.execute(
-        """SELECT first_dos, last_dos, client_name_combined, billed_hours, paid_hours, insurance, payment_date 
+        """SELECT first_dos, last_dos, client_name_combined, billed_hours, paid_hours, insurance, payment_date,
+                  charge_amount, payment_amount
            FROM remittance WHERE is_latest = True"""
     ).fetchall()
 
     reconciliation_rows = []
     unmatched_clients = set()
 
-    # Build reverse name mapping to match remittance-only names back to payroll names
-    reverse_mapping = {v.upper(): k for k, v in name_mapping.items() if v is not None}
+    # Build reverse name mapping to match remittance-only names back to payroll names by care type
+    reverse_mapping = {}
+    for k, v in name_mapping.items():
+        if v is not None:
+            c_type = determine_care_type(k, None)
+            reverse_mapping[(v.upper(), c_type)] = k
 
     # 5. Process week by week
     for week_start, week_end in sorted_weeks:
@@ -504,27 +617,40 @@ def rebuild_reconciliation(
             if fd <= week_end and ld >= week_start:
                 week_remit.append(r)
 
-        # Aggregate remittance records for this week using DOS segment-based deduplication
+        # Aggregate remittance records for this week using DOS segment-based deduplication grouped by (client, care_type)
         from collections import defaultdict
         by_client_dos = defaultdict(lambda: defaultdict(list))
         for r in week_remit:
-            fd, ld, client_name, b_hrs, p_hrs, ins, p_date = r
+            fd, ld, client_name, b_hrs, p_hrs, ins, p_date, charge, pay = r
             client = (client_name or "").strip().upper()
             if not client:
                 continue
             fd = fd or ld
             ld = ld or fd
-            by_client_dos[client][(fd, ld)].append(r)
+            
+            # Determine care type dynamically
+            rate = 0.0
+            if b_hrs and float(b_hrs) != 0:
+                rate = abs(float(charge or 0) / float(b_hrs))
+            elif p_hrs and float(p_hrs) != 0:
+                rate = abs(float(pay or 0) / float(p_hrs))
+                
+            if rate > 0.0:
+                care_type = "Skilled" if rate >= 30.0 else "Unskilled"
+            else:
+                care_type = "Skilled" if (ins and "PDN" in ins.upper()) else "Unskilled"
+                
+            by_client_dos[(client, care_type)][(fd, ld)].append(r)
 
         aggregated_remit = {}
-        for client, segments in by_client_dos.items():
+        for (client, care_type), segments in by_client_dos.items():
             total_billed = 0.0
             total_paid = 0.0
             final_ins = None
             for (fd, ld), group in segments.items():
                 daily_billed = defaultdict(float)
                 for r in group:
-                    _, _, _, b_hrs, p_hrs, ins, p_date = r
+                    _, _, _, b_hrs, p_hrs, ins, p_date, _, _ = r
                     daily_billed[p_date] += float(b_hrs or 0.0)
                     total_paid += float(p_hrs or 0.0)
                     if ins:
@@ -532,7 +658,7 @@ def rebuild_reconciliation(
                 segment_billed = max(daily_billed.values()) if daily_billed else 0.0
                 segment_billed = max(segment_billed, 0.0)
                 total_billed += segment_billed
-            aggregated_remit[client] = {
+            aggregated_remit[(client, care_type)] = {
                 "billed_hours": total_billed,
                 "paid_hours": total_paid,
                 "insurance": final_ins,
@@ -540,27 +666,30 @@ def rebuild_reconciliation(
 
         # Normalize keys for quick lookup
         remit_lookup = {}
-        for r_name, data in aggregated_remit.items():
+        for (r_name, care_type), data in aggregated_remit.items():
             client_key = _normalize_client_key(r_name)
-            remit_lookup[client_key] = data
+            remit_lookup[(client_key, care_type)] = data
 
         if has_payroll:
-            # Standard Join Mode: Loop over payroll clients
-            # Group payroll rows by client_name_raw
-            grouped_pay: dict[str, dict] = {}
+            # Standard Join Mode: Loop over payroll clients grouped by (client_name_raw, care_type)
+            grouped_pay: dict[tuple[str, str], dict] = {}
             paycheck_date = None
             for r in week_payroll:
                 paycheck_date = r[2]
                 c_name = r[3]
-                if c_name not in grouped_pay:
-                    grouped_pay[c_name] = {
+                ins = r[4]
+                care_type = determine_care_type(c_name, ins)
+                key = (c_name, care_type)
+                if key not in grouped_pay:
+                    grouped_pay[key] = {
                         "client_name_raw": c_name,
-                        "insurance": r[4],
+                        "care_type": care_type,
+                        "insurance": ins,
                         "total_hours": 0.0,
                     }
-                grouped_pay[c_name]["total_hours"] += float(r[5] or 0.0)
+                grouped_pay[key]["total_hours"] += float(r[5] or 0.0)
 
-            for payroll_name, pay_data in grouped_pay.items():
+            for (payroll_name, care_type), pay_data in grouped_pay.items():
                 insurance = pay_data["insurance"]
                 payroll_hrs = pay_data["total_hours"]
 
@@ -576,8 +705,8 @@ def rebuild_reconciliation(
                     pass
                 elif remit_name:
                     client_key = _normalize_client_key(remit_name)
-                    if client_key in remit_lookup:
-                        rem_data = remit_lookup[client_key]
+                    if (client_key, care_type) in remit_lookup:
+                        rem_data = remit_lookup[(client_key, care_type)]
                         billed_hrs = rem_data["billed_hours"]
                         paid_hrs = rem_data["paid_hours"]
                         remit_insurance = rem_data["insurance"]
@@ -613,17 +742,20 @@ def rebuild_reconciliation(
                     "analyst_override": prev.get("analyst_override"),
                     "yash_comments": prev.get("yash_comments"),
                     "connie_comments": prev.get("connie_comments"),
-                    "care_type": determine_care_type(payroll_name, final_insurance),
+                    "care_type": care_type,
                 })
         else:
             # Remittance-Only Mode (No Payroll File)
-            for remit_name, rem_data in aggregated_remit.items():
+            for (remit_name, care_type), rem_data in aggregated_remit.items():
                 billed_hrs = rem_data["billed_hours"]
                 paid_hrs = rem_data["paid_hours"]
                 remit_insurance = rem_data["insurance"]
 
-                # Reverse resolve client name to payroll if match exists
-                payroll_name = reverse_mapping.get(remit_name.upper(), remit_name)
+                # Reverse resolve client name to payroll if match exists, care-type aware
+                payroll_name = reverse_mapping.get((remit_name.upper(), care_type))
+                if not payroll_name:
+                    fallback_keys = [k for (r_nm, ct), k in reverse_mapping.items() if r_nm == remit_name.upper()]
+                    payroll_name = fallback_keys[0] if fallback_keys else remit_name
                 copay = is_copay_client(payroll_name, copay_set)
 
                 # Build row (payroll hours is None, status is 'No Payroll Data')
@@ -651,6 +783,7 @@ def rebuild_reconciliation(
                     else:
                         res_detailed = "Paid Excess"
 
+
                 reconciliation_rows.append({
                     "week_start_date": week_start,
                     "week_end_date": week_end,
@@ -671,7 +804,7 @@ def rebuild_reconciliation(
                     "analyst_override": prev.get("analyst_override"),
                     "yash_comments": prev.get("yash_comments"),
                     "connie_comments": prev.get("connie_comments"),
-                    "care_type": determine_care_type(payroll_name, remit_insurance),
+                    "care_type": care_type,
                 })
 
     # 6. Bulk Insert to reconciliation table

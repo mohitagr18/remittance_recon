@@ -122,3 +122,39 @@ The billing team bills 56 hours and gets paid 40 hours. They rebill the remainin
   * **Paid Hours**: 0.0 (40 - 40)
   * **Pending Hours**: 56.0 (56.0 payroll - 0.0 paid)
   * **Status**: Follow-up: Not Paid
+
+---
+
+## Special Case: Payer Reversal Rate Mismatch Error
+
+### Description
+A major data discrepancy occurs when the payer (insurance company) reverses a previous skilled payment (e.g. LPN care at `$53.96/hr`) but mistakenly applies the **unskilled/PCA rate** (e.g. `$19.83/hr`) to compute the hours reversed on the claim line. This results in the remittance file containing an artificially inflated negative hours value (e.g. `-130.6` hours instead of `-48.0` hours) for the reversal, leading to negative weekly paid hour totals and incorrect dashboards.
+
+### Case Study: Soleil Pegram (DOS 2025-06-11)
+* **Original Skilled Claim (TCN 25178E0025330)**:
+  * Paid Amount: **$2590.08**
+  * Paid Hours: **48.0**
+  * Hourly Rate: $$\frac{\$2590.08}{48.0} = \$53.96\text{ / hr}$$ (Skilled LPN rate)
+* **Reversal Claim (TCN 25178E0025330R1)**:
+  * Reversed Amount: **-$2590.08**
+  * Reversed Hours in Remittance: **-130.61**
+  * Hourly Rate of Reversal: $$\frac{-\$2590.08}{-130.61} = \$19.83\text{ / hr}$$ (Unskilled PCA rate)
+* **The Root Cause**: The payer divided the skilled dollar amount (`-$2590.08`) by the unskilled rate (`$19.83`) instead of the skilled rate (`$53.96`) when generating the remittance claim line:
+  $$\text{Reversal Hours} = \frac{-2590.08}{19.8322} = -130.6\text{ hours}$$
+
+---
+
+## Proposed Clean Resolution Strategies
+
+### Strategy A: Automated Pipeline Correction (Recommended)
+During the ETL ingestion pipeline (inside `remittance.py` or `pipeline.py`), detect reversal lines where the hourly rate diverges from the client's care type contract:
+1. Identify reversal records (where TCN contains suffix `R1`, `R2`, `A1` etc., and hours/amounts are negative).
+2. Strip the suffix to find the original parent TCN (e.g., `25178E0025330R1` $\rightarrow$ `25178E0025330`).
+3. Look up the original claim in the database and compute its rate: $$\text{Original Rate} = \frac{\text{Original Paid Amount}}{\text{Original Paid Hours}}$$
+4. If a rate difference is detected, recalculate the reversal hours:
+   $$\text{Adjusted Reversal Hours} = \frac{\text{Reversal Payment Amount}}{\text{Original Rate}}$$
+5. Save the adjusted hours into the database. This corrects the source data immediately, ensuring all dashboards, summaries, and ledgers automatically reflect the true hourly totals.
+
+### Strategy B: Workbench Warning Flag
+Highlight rows in the Client Ledger and Analyst Workbench with a warning indicator (e.g., ⚠️) and a tool-tip when a rate mismatch is detected (where $$\left|\frac{\text{payment\_amount}}{\text{paid\_hours}} - \text{standard\_rate}\right| > 0.10$$), notifying analysts of a payer system formatting error.
+

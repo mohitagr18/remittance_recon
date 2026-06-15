@@ -172,5 +172,8 @@ def _strip_suffix(name: str) -> str:
 
 
 def _make_key(name: str) -> str:
-    """Canonical lookup key: strip role suffix, uppercase, collapse spaces."""
-    return re.sub(r"\s+", " ", _strip_suffix(name)).upper().strip()
+    """Canonical lookup key: strip role suffix, uppercase, collapse spaces and normalize comma spacing."""
+    s = re.sub(r"\s+", " ", _strip_suffix(name)).upper().strip()
+    # Normalize comma spacing: "TERRY,DOROTHY" → "TERRY, DOROTHY"
+    s = re.sub(r",\s*", ", ", s)
+    return s

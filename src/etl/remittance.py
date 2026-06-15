@@ -121,14 +121,42 @@ def filter_by_dos_range(records: list[dict], start: date, end: date) -> list[dic
     return out
 
 
-def aggregate_remittance_hours(records: list[dict]) -> dict[str, dict]:
+def determine_remittance_record_care_type(r: dict) -> str:
     """
-    Group by client_name_combined → sum billed_hours and paid_hours (is_latest only),
+    Determine whether a remittance claim is Skilled or Unskilled.
+    We check the hourly rate first:
+    - If rate >= 30.0, it is Skilled.
+    - If rate is between 0.1 and 30.0, it is Unskilled.
+    - If rate is not determinable, we check the insurance label (PDN = Skilled).
+    """
+    billed_hrs = float(r.get("billed_hours") or 0.0)
+    charge = float(r.get("charge_amount") or 0.0)
+    paid_hrs = float(r.get("paid_hours") or 0.0)
+    pay = float(r.get("payment_amount") or 0.0)
+    
+    rate = 0.0
+    if billed_hrs != 0:
+        rate = abs(charge / billed_hrs)
+    elif paid_hrs != 0:
+        rate = abs(pay / paid_hrs)
+        
+    if rate > 0.0:
+        return "Skilled" if rate >= 30.0 else "Unskilled"
+        
+    ins = (r.get("insurance") or "").upper()
+    if "PDN" in ins:
+        return "Skilled"
+    return "Unskilled"
+
+
+def aggregate_remittance_hours(records: list[dict]) -> dict[tuple[str, str], dict]:
+    """
+    Group by (client_name_combined, care_type) → sum billed_hours and paid_hours (is_latest only),
     using the daily max billed per DOS range segment to deduplicate resubmissions.
-    Returns: { "LAST, FIRST": {"client_name_combined": "LAST, FIRST", "billed_hours": x, "paid_hours": y, "insurance": z} }
+    Returns: { (LAST, FIRST, care_type): {"client_name_combined": "LAST, FIRST", "care_type": care_type, "billed_hours": x, "paid_hours": y, "insurance": z} }
     """
     from collections import defaultdict
-    # Group records by client and DOS segment (first_dos, last_dos)
+    # Group records by (client, care_type) and DOS segment (first_dos, last_dos)
     by_client_dos = defaultdict(lambda: defaultdict(list))
     for r in records:
         if not r.get("is_latest"):
@@ -136,14 +164,15 @@ def aggregate_remittance_hours(records: list[dict]) -> dict[str, dict]:
         client = (r.get("client_name_combined") or "").strip().upper()
         if not client:
             continue
+        care_type = determine_remittance_record_care_type(r)
         fd = r.get("first_dos")
         ld = r.get("last_dos")
         fd = fd or ld
         ld = ld or fd
-        by_client_dos[client][(fd, ld)].append(r)
+        by_client_dos[(client, care_type)][(fd, ld)].append(r)
         
-    agg: dict[str, dict] = {}
-    for client, segments in by_client_dos.items():
+    agg: dict[tuple[str, str], dict] = {}
+    for (client, care_type), segments in by_client_dos.items():
         total_billed = 0.0
         total_paid = 0.0
         final_ins = None
@@ -166,13 +195,15 @@ def aggregate_remittance_hours(records: list[dict]) -> dict[str, dict]:
             segment_billed = max(segment_billed, 0.0)
             total_billed += segment_billed
             
-        agg[client] = {
+        agg[(client, care_type)] = {
             "client_name_combined": orig_name,
+            "care_type": care_type,
             "billed_hours": round(total_billed, 4),
             "paid_hours": round(total_paid, 4),
             "insurance": final_ins,
         }
     return agg
+
 
 
 # ─── Private helpers ──────────────────────────────────────────────────────────
