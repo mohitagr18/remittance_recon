@@ -235,3 +235,8 @@ data/
 ehthumbs.db
 Thumbs.db
 
+# Documentation not for public eyes
+pending_items.md
+docs/private/
+
+

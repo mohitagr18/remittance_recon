@@ -355,18 +355,39 @@ def _mark_file_ingested(
     log.info("Registered file in ingested_files: %s", filename)
 
 
-def _correct_reversal_rates(conn: duckdb.DuckDBPyConnection) -> None:
+def _correct_reversal_rates(conn: duckdb.DuckDBPyConnection, name_mapping: dict[str, str | None]) -> None:
     """
-    Detect and correct Payer Reversal Rate Mismatch errors in the remittance table.
-    We use a two-step lookup to find the correct hourly rate for a reversal:
-    1. If the parent claim exists in the database (matching reversal TCN minus suffix),
-       we use the parent claim's actual hourly rate.
-    2. Otherwise, we fall back to the client's most common positive paid hourly rate
-       (if they are classified as a Skilled client with standard rate >= 30.0).
+    Detect and correct Payer Rate Mismatch errors in the remittance table.
+    1. For purely skilled clients (who have only 'Skilled' payroll records and no 'Unskilled' payroll records),
+       we correct all claims (both positive and negative) that were billed at an unskilled rate (< $30/hr).
+    2. For other clients (such as overlapping clients), we identify reversal claims with rate mismatches
+       and correct them using the parent claim's rate or standard rate.
     """
-    log.info("Checking and correcting payer reversal rate mismatches in remittance...")
-    
-    # Step 1: Pre-calculate client standard positive rates for fallback
+    log.info("Checking and correcting payer rate mismatches in remittance...")
+
+    from collections import defaultdict
+
+    # 1. Identify purely skilled clients based on payroll history
+    purely_skilled_remit_names = set()
+    try:
+        payroll_rows = conn.execute("SELECT DISTINCT client_name_raw, insurance FROM payroll").fetchall()
+        client_types = defaultdict(set)
+        for p_name, ins in payroll_rows:
+            ct = determine_care_type(p_name, ins)
+            client_types[p_name].add(ct)
+
+        purely_skilled_payroll_names = {
+            name for name, types in client_types.items()
+            if 'Skilled' in types and 'Unskilled' not in types
+        }
+        for p_name in purely_skilled_payroll_names:
+            rem_name, match_status = resolve_client_name(p_name, name_mapping)
+            if rem_name and match_status != "NOT_AVAILABLE":
+                purely_skilled_remit_names.add(rem_name.upper())
+    except Exception as e:
+        log.warning("Could not identify purely skilled clients: %s", e)
+
+    # 2. Pre-calculate client standard positive rates for fallback
     query_standard_rates = """
         WITH client_rates AS (
             SELECT 
@@ -395,31 +416,87 @@ def _correct_reversal_rates(conn: duckdb.DuckDBPyConnection) -> None:
     except Exception as e:
         log.warning("Could not calculate standard rates: %s", e)
 
-    # Step 2: Query all potential reversal claims (where paid_hours < 0 or billed_hours < 0)
+    # Calculate global average skilled rate as a fallback
+    global_skilled_avg = 54.66
+    try:
+        avg_row = conn.execute("""
+            SELECT AVG(payment_amount / paid_hours)
+            FROM remittance
+            WHERE paid_hours > 0
+              AND (payment_amount / paid_hours) >= 30
+        """).fetchone()
+        if avg_row and avg_row[0]:
+            global_skilled_avg = float(avg_row[0])
+    except Exception:
+        pass
+
+    # Keep track of corrected IDs to avoid double-processing
+    corrected_ids = set()
+    corrected_count = 0
+
+    # Step A: Correct all claims for purely skilled clients that were billed at an unskilled rate
+    if purely_skilled_remit_names:
+        try:
+            placeholders = ",".join(["?"] * len(purely_skilled_remit_names))
+            claims = conn.execute(
+                f"""SELECT id, client_name_combined, tcn, payment_amount, charge_amount, paid_hours, billed_hours
+                    FROM remittance
+                    WHERE client_name_combined IN ({placeholders})""",
+                list(purely_skilled_remit_names)
+            ).fetchall()
+
+            for r_id, client_name, tcn, p_amount, c_amount, paid_hours, billed_hours in claims:
+                p_hours_val = float(paid_hours or 0.0)
+                b_hours_val = float(billed_hours or 0.0)
+
+                # Implied rates
+                rate = 0.0
+                if p_hours_val != 0:
+                    rate = abs(float(p_amount or 0.0) / p_hours_val)
+                elif b_hours_val != 0:
+                    rate = abs(float(c_amount or 0.0) / b_hours_val)
+
+                if 0.1 <= rate < 30.0:
+                    # Mismatch! Correct the hours.
+                    std_rate = skilled_client_rates.get(client_name, global_skilled_avg)
+                    corrected_paid = round(float(p_amount or 0.0) / std_rate, 4)
+                    corrected_billed = round(float(c_amount or 0.0) / std_rate, 4)
+
+                    conn.execute(
+                        """UPDATE remittance
+                           SET paid_hours = ?, billed_hours = ?
+                           WHERE id = ?""",
+                        [corrected_paid, corrected_billed, r_id]
+                    )
+                    corrected_ids.add(r_id)
+                    corrected_count += 1
+        except Exception as e:
+            log.error("Error correcting purely skilled client rates: %s", e)
+
+    # Step B: Scan and correct reversals for all other clients (e.g. overlapping clients)
     try:
         reversals = conn.execute(
             """SELECT id, client_name_combined, tcn, payment_amount, charge_amount, paid_hours, billed_hours 
                FROM remittance 
-               WHERE paid_hours < 0 OR billed_hours < 0"""
+               WHERE (paid_hours < 0 OR billed_hours < 0)"""
         ).fetchall()
 
-        corrected_count = 0
         for r_id, client_name, tcn, p_amount, c_amount, paid_hours, billed_hours in reversals:
-            # Skip if hours are 0/None or not negative
+            if r_id in corrected_ids:
+                continue
+
             p_hours_val = float(paid_hours or 0)
             b_hours_val = float(billed_hours or 0)
             
-            # Implied rates of the reversal
             p_rate = abs(float(p_amount or 0) / p_hours_val) if p_hours_val != 0 else 0.0
             c_rate = abs(float(c_amount or 0) / b_hours_val) if b_hours_val != 0 else 0.0
             
-            # We only correct if either rate is Unskilled (< 30.0) but standard rate is Skilled (>= 30.0)
             is_reversal_unskilled = (p_rate > 0.0 and p_rate < 30.0) or (c_rate > 0.0 and c_rate < 30.0)
             
             if not is_reversal_unskilled:
                 continue
 
-            # Try parent lookup first (TCN ends with R1/R2/A1 etc., strip last 2 chars)
+            # Try parent lookup first
             parent_tcn = tcn[:-2] if len(tcn) > 2 and (tcn.endswith("R1") or tcn.endswith("R2") or tcn.endswith("A1")) else None
             parent_rate = None
             if parent_tcn:
@@ -440,7 +517,6 @@ def _correct_reversal_rates(conn: duckdb.DuckDBPyConnection) -> None:
                 parent_rate = skilled_client_rates.get(client_name)
 
             if parent_rate and parent_rate >= 30.0:
-                # Correct the hours
                 corrected_paid = round(float(p_amount or 0.0) / parent_rate, 4)
                 corrected_billed = round(float(c_amount or 0.0) / parent_rate, 4)
                 
@@ -454,7 +530,7 @@ def _correct_reversal_rates(conn: duckdb.DuckDBPyConnection) -> None:
                 
         if corrected_count > 0:
             conn.commit()
-            log.info("Corrected %d payer reversal rate mismatch records in remittance.", corrected_count)
+            log.info("Corrected %d payer rate mismatch records in remittance.", corrected_count)
     except Exception as e:
         log.error("Error correcting reversal rate mismatches: %s", e)
 
@@ -471,7 +547,7 @@ def rebuild_reconciliation(
     payroll and remittance tables. Preserves analyst notes/overrides.
     """
     # Run the reversal rate correction step first
-    _correct_reversal_rates(conn)
+    _correct_reversal_rates(conn, name_mapping)
 
     log.info("Rebuilding reconciliation table...")
 
@@ -710,6 +786,23 @@ def rebuild_reconciliation(
                         billed_hrs = rem_data["billed_hours"]
                         paid_hrs = rem_data["paid_hours"]
                         remit_insurance = rem_data["insurance"]
+                    else:
+                        # Fallback: try any care type for this client.
+                        # This handles cases where the payroll suffix (e.g. LPN) implies
+                        # Skilled but the insurance bills at unskilled rates — a real-world
+                        # mismatch that would otherwise silently show as Not Billed.
+                        fallback = next(
+                            (remit_lookup[(k, ct)] for (k, ct) in remit_lookup if k == client_key),
+                            None
+                        )
+                        if fallback:
+                            billed_hrs = fallback["billed_hours"]
+                            paid_hrs = fallback["paid_hours"]
+                            remit_insurance = fallback["insurance"]
+                            log.debug(
+                                "Care type fallback used for %s: payroll=%s, remit care_type differs",
+                                payroll_name, care_type
+                            )
                 else:
                     unmatched_clients.add(payroll_name)
 

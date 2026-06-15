@@ -78,3 +78,35 @@ class TestPipeline:
         assert "payroll_records" in d
         assert "recon_rows" in d
 
+    def test_no_silent_not_billed_when_remittance_exists(self, conn):
+        """
+        Regression guard for care-type mismatch silent failure (e.g. ROBINSON, GEORGE LPN):
+        if a client has MATCHED status (remittance name is known) AND remittance records exist
+        for that week, billed_hours must not be 0 (which would falsely show as Not Billed).
+        Previously this was silently failing because the (name, care_type) join key mismatched
+        when payroll suffix implied Skilled but insurance billed at unskilled rates.
+        """
+        # Find clients with MATCHED status but 0 billed hours AND 0 paid hours
+        # who also have remittance records for that week — that's the broken scenario
+        rows = conn.execute("""
+            SELECT r.client_name_payroll, r.week_start_date, r.billed_hours, r.paid_hours,
+                   r.match_status, r.result_detailed
+            FROM reconciliation r
+            WHERE r.match_status = 'MATCHED'
+              AND r.payroll_hours > 0
+              AND r.billed_hours = 0
+              AND r.paid_hours = 0
+              AND r.result_detailed = 'Not Billed'
+              -- Only flag if remittance record exists for this client in the same week
+              AND EXISTS (
+                  SELECT 1 FROM remittance rem
+                  WHERE rem.client_name_combined = r.client_name_remittance
+                    AND rem.is_latest = true
+                    AND rem.first_dos <= r.week_end_date
+                    AND rem.last_dos >= r.week_start_date
+              )
+        """).fetchall()
+        assert len(rows) == 0, (
+            f"Found {len(rows)} MATCHED clients showing Not Billed despite having remittance records "
+            f"(care-type mismatch fallback may have regressed): {[r[0] for r in rows[:5]]}"
+        )

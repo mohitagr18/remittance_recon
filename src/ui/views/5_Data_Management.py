@@ -94,6 +94,30 @@ else:
         if st.button("🔄 Rescan Directories", type="secondary", use_container_width=True):
             st.rerun()
 
+# ── Force Rebuild ──────────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown("**🔁 Force Rebuild Reconciliation**")
+st.caption("Rebuilds reconciliation from existing DB data without requiring new files. Use this after pipeline logic changes.")
+if st.button("🔁 Rebuild Reconciliation Now", type="secondary"):
+    from src.db.connection import get_persistent_conn
+    from src.etl.pipeline import rebuild_reconciliation, load_name_match_from_db, load_copay_clients_from_db
+    from src.config import cfg
+    from src.etl.name_match import load_name_match, load_copay_clients
+    with st.spinner("Rebuilding reconciliation table..."):
+        rconn = get_persistent_conn(cfg.db_path)
+        try:
+            if cfg.recon_file.exists():
+                name_mapping = load_name_match(cfg.recon_file)
+                copay_set = load_copay_clients(cfg.recon_file)
+            else:
+                name_mapping = load_name_match_from_db(rconn)
+                copay_set = load_copay_clients_from_db(rconn)
+            summary = rebuild_reconciliation(rconn, name_mapping, copay_set)
+        finally:
+            rconn.close()
+    st.success(f"✅ Done! {summary.recon_rows} rows rebuilt. Good: {summary.result_good}, Follow-up: {summary.result_followup}", icon="✅")
+    st.rerun()
+
 # ── Ingestion History ──────────────────────────────────────────────────────
 st.markdown(
     "<div style='margin-top:2rem;' class='section-header'><h3>📜 Payroll Ingestion Logs</h3></div>",
