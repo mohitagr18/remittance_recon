@@ -71,3 +71,55 @@ class TestAggregateRemittanceHours:
             assert "billed_hours" in data
             assert "paid_hours" in data
             assert isinstance(data["billed_hours"], float)
+
+    def test_deduplication_scenario(self):
+        # Replicates Scenario 3: Billed 56/10, Billed 56/20, Billed 26/5, Billed 56/21.
+        mock_records = [
+            {
+                "is_latest": True,
+                "client_name_combined": "TEST, CLIENT",
+                "first_dos": date(2025, 6, 25),
+                "last_dos": date(2025, 7, 1),
+                "payment_date": date(2025, 7, 10),
+                "billed_hours": 56.0,
+                "paid_hours": 10.0,
+                "insurance": "Medicaid",
+            },
+            {
+                "is_latest": True,
+                "client_name_combined": "TEST, CLIENT",
+                "first_dos": date(2025, 6, 25),
+                "last_dos": date(2025, 7, 1),
+                "payment_date": date(2025, 10, 11),
+                "billed_hours": 56.0,
+                "paid_hours": 20.0,
+                "insurance": "Medicaid",
+            },
+            {
+                "is_latest": True,
+                "client_name_combined": "TEST, CLIENT",
+                "first_dos": date(2025, 6, 25),
+                "last_dos": date(2025, 7, 1),
+                "payment_date": date(2025, 10, 17),
+                "billed_hours": 26.0,
+                "paid_hours": 5.0,
+                "insurance": "Medicaid",
+            },
+            {
+                "is_latest": True,
+                "client_name_combined": "TEST, CLIENT",
+                "first_dos": date(2025, 6, 25),
+                "last_dos": date(2025, 7, 1),
+                "payment_date": date(2025, 12, 19),
+                "billed_hours": 56.0,
+                "paid_hours": 21.0,
+                "insurance": "Medicaid",
+            },
+        ]
+        res = aggregate_remittance_hours(mock_records)
+        assert "TEST, CLIENT" in res
+        # Billed hours must be deduplicated to the max daily sum (56.0)
+        assert res["TEST, CLIENT"]["billed_hours"] == 56.0
+        # Paid hours must be summed cumulatively (10 + 20 + 5 + 21 = 56.0)
+        assert res["TEST, CLIENT"]["paid_hours"] == 56.0
+

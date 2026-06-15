@@ -76,12 +76,12 @@ def compute_result(
     # billed ≈ payroll from here on
     if paid_hrs < 1:
         return "Follow up", "Not Paid"
-    if paid_hrs < billed_hrs - tolerance:
+    if paid_hrs < payroll_hrs - tolerance:
         return "Follow up", "Paid Less"
-    if paid_hrs > billed_hrs + tolerance:
+    if paid_hrs > payroll_hrs + tolerance and abs(bvp) > tolerance:
         return "Follow up", "Paid Excess"
     # Small rounding difference — classify as Billing Error, not Paid Excess
-    if abs(bvp) > 0.01:
+    if 0.01 < abs(bvp) <= tolerance:
         return "Follow up", "Billing Error"
 
     return "Good", None

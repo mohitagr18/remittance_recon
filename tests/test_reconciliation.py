@@ -59,6 +59,21 @@ class TestComputeResult:
         assert compute_result(35, -5, 35) == ("Follow up", "Payer Reversal")
         assert compute_result(35, 35, -10) == ("Follow up", "Payer Reversal")
 
+    def test_rebill_fully_paid_is_good(self):
+        # We billed 100 but payroll is 35 and we got paid 35. Under the new logic,
+        # since paid matches payroll and billed >= payroll, this is Good!
+        assert compute_result(35, 100, 35) == ("Good", None)
+
+    def test_rebill_partially_paid_short(self):
+        # We billed 100 but payroll is 35 and we got paid 20. Under the new logic,
+        # since paid (20) < payroll (35) - tolerance, this is Paid Less!
+        assert compute_result(35, 100, 20) == ("Follow up", "Paid Less")
+
+    def test_rebill_excess_paid(self):
+        # We billed 100 but payroll is 35 and we got paid 40. Under the new logic,
+        # since paid (40) > payroll (35) + tolerance, this is Paid Excess!
+        assert compute_result(35, 100, 40) == ("Follow up", "Paid Excess")
+
 
 class TestComputeDeltas:
     def test_exact_match(self):

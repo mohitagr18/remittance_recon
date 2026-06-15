@@ -475,7 +475,7 @@ def rebuild_reconciliation(
 
     # Get all remittance records
     raw_remit = conn.execute(
-        """SELECT first_dos, last_dos, client_name_combined, billed_hours, paid_hours, insurance 
+        """SELECT first_dos, last_dos, client_name_combined, billed_hours, paid_hours, insurance, payment_date 
            FROM remittance WHERE is_latest = True"""
     ).fetchall()
 
@@ -504,21 +504,39 @@ def rebuild_reconciliation(
             if fd <= week_end and ld >= week_start:
                 week_remit.append(r)
 
-        # Aggregate remittance records for this week
-        # Group by client_name_combined
-        aggregated_remit: dict[str, dict] = {}
+        # Aggregate remittance records for this week using DOS segment-based deduplication
+        from collections import defaultdict
+        by_client_dos = defaultdict(lambda: defaultdict(list))
         for r in week_remit:
-            client = (r[2] or "").strip().upper()
+            fd, ld, client_name, b_hrs, p_hrs, ins, p_date = r
+            client = (client_name or "").strip().upper()
             if not client:
                 continue
-            if client not in aggregated_remit:
-                aggregated_remit[client] = {
-                    "billed_hours": 0.0,
-                    "paid_hours": 0.0,
-                    "insurance": r[5],
-                }
-            aggregated_remit[client]["billed_hours"] += float(r[3] or 0.0)
-            aggregated_remit[client]["paid_hours"] += float(r[4] or 0.0)
+            fd = fd or ld
+            ld = ld or fd
+            by_client_dos[client][(fd, ld)].append(r)
+
+        aggregated_remit = {}
+        for client, segments in by_client_dos.items():
+            total_billed = 0.0
+            total_paid = 0.0
+            final_ins = None
+            for (fd, ld), group in segments.items():
+                daily_billed = defaultdict(float)
+                for r in group:
+                    _, _, _, b_hrs, p_hrs, ins, p_date = r
+                    daily_billed[p_date] += float(b_hrs or 0.0)
+                    total_paid += float(p_hrs or 0.0)
+                    if ins:
+                        final_ins = ins
+                segment_billed = max(daily_billed.values()) if daily_billed else 0.0
+                segment_billed = max(segment_billed, 0.0)
+                total_billed += segment_billed
+            aggregated_remit[client] = {
+                "billed_hours": total_billed,
+                "paid_hours": total_paid,
+                "insurance": final_ins,
+            }
 
         # Normalize keys for quick lookup
         remit_lookup = {}

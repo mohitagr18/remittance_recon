@@ -123,25 +123,55 @@ def filter_by_dos_range(records: list[dict], start: date, end: date) -> list[dic
 
 def aggregate_remittance_hours(records: list[dict]) -> dict[str, dict]:
     """
-    Group by client_name_combined → sum billed_hours and paid_hours (is_latest only).
-    Returns: { "LAST, FIRST": {"billed_hours": x, "paid_hours": y, "insurance": z} }
+    Group by client_name_combined → sum billed_hours and paid_hours (is_latest only),
+    using the daily max billed per DOS range segment to deduplicate resubmissions.
+    Returns: { "LAST, FIRST": {"client_name_combined": "LAST, FIRST", "billed_hours": x, "paid_hours": y, "insurance": z} }
     """
-    agg: dict[str, dict] = {}
+    from collections import defaultdict
+    # Group records by client and DOS segment (first_dos, last_dos)
+    by_client_dos = defaultdict(lambda: defaultdict(list))
     for r in records:
-        if not r["is_latest"]:
+        if not r.get("is_latest"):
             continue
-        key = (r.get("client_name_combined") or "").strip().upper()
-        if not key:
+        client = (r.get("client_name_combined") or "").strip().upper()
+        if not client:
             continue
-        if key not in agg:
-            agg[key] = {
-                "client_name_combined": r.get("client_name_combined"),
-                "billed_hours": 0.0,
-                "paid_hours": 0.0,
-                "insurance": r.get("insurance"),
-            }
-        agg[key]["billed_hours"] = round(agg[key]["billed_hours"] + (r["billed_hours"] or 0), 4)
-        agg[key]["paid_hours"] = round(agg[key]["paid_hours"] + (r["paid_hours"] or 0), 4)
+        fd = r.get("first_dos")
+        ld = r.get("last_dos")
+        fd = fd or ld
+        ld = ld or fd
+        by_client_dos[client][(fd, ld)].append(r)
+        
+    agg: dict[str, dict] = {}
+    for client, segments in by_client_dos.items():
+        total_billed = 0.0
+        total_paid = 0.0
+        final_ins = None
+        orig_name = None
+        
+        for (fd, ld), group in segments.items():
+            daily_billed = defaultdict(float)
+            for r in group:
+                p_date = r.get("payment_date")
+                b_hrs = float(r.get("billed_hours") or 0.0)
+                p_hrs = float(r.get("paid_hours") or 0.0)
+                daily_billed[p_date] += b_hrs
+                total_paid += p_hrs
+                if r.get("insurance"):
+                    final_ins = r.get("insurance")
+                if r.get("client_name_combined"):
+                    orig_name = r.get("client_name_combined")
+                    
+            segment_billed = max(daily_billed.values()) if daily_billed else 0.0
+            segment_billed = max(segment_billed, 0.0)
+            total_billed += segment_billed
+            
+        agg[client] = {
+            "client_name_combined": orig_name,
+            "billed_hours": round(total_billed, 4),
+            "paid_hours": round(total_paid, 4),
+            "insurance": final_ins,
+        }
     return agg
 
 
