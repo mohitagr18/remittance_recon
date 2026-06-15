@@ -47,6 +47,7 @@ def rolling_trend_chart(df: pd.DataFrame) -> go.Figure:
         subplot_titles=("", "")
     )
     
+    fig.add_trace(go.Bar(name="Payroll", x=df["week"], y=df["payroll_hrs"], marker_color="#a78bfa"), row=1, col=1)
     fig.add_trace(go.Bar(name="Billed", x=df["week"], y=df["billed_hrs"], marker_color="#4f8ef7"), row=1, col=1)
     fig.add_trace(go.Bar(name="Paid", x=df["week"], y=df["paid_hrs"], marker_color="#22c55e"), row=1, col=1)
     fig.add_trace(go.Bar(name="Pending", x=df["week"], y=pending_vals, marker_color="#ef4444", width=0.3), row=2, col=1)
@@ -209,6 +210,7 @@ def client_billed_paid_chart(df: pd.DataFrame) -> go.Figure:
         subplot_titles=("", "")
     )
     
+    fig.add_trace(go.Bar(name="Payroll", x=df["x_axis"], y=df["payroll_hours"], marker_color="#a78bfa"), row=1, col=1)
     fig.add_trace(go.Bar(name="Billed", x=df["x_axis"], y=df["billed_hours"], marker_color="#4f8ef7"), row=1, col=1)
     fig.add_trace(go.Bar(name="Paid", x=df["x_axis"], y=df["paid_hours"], marker_color="#22c55e"), row=1, col=1)
     fig.add_trace(go.Bar(name="Pending", x=df["x_axis"], y=pending_vals, marker_color="#ef4444", width=0.3), row=2, col=1)

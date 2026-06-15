@@ -77,7 +77,7 @@ if df.empty:
 total_payroll = df["payroll_hours"].sum()
 total_billed  = df["billed_hours"].sum()
 total_paid    = df["paid_hours"].sum()
-total_pending = df["pending_hrs"].sum()
+total_pending = max(total_payroll - total_paid, 0.0)
 n_followup    = (df["status"] == "Follow up").sum()
 n_good        = (df["status"] == "Good").sum()
 

@@ -55,9 +55,37 @@ def parse_payroll(path: Path) -> dict[str, Any]:
     raw = xl.parse(data_sheet, header=None, dtype=str)
 
     # ── Extract dates from rows 0 and 1 (0-indexed) ──────────────────────────
-    paycheck_date = _parse_date_cell(raw.iloc[0, 4])
-    week_start_date = _parse_date_cell(raw.iloc[1, 3])
-    week_end_date = _parse_date_cell(raw.iloc[1, 5])
+    # Robust paycheck_date extraction
+    paycheck_date = None
+    row_0_vals = list(raw.iloc[0].values)
+    for idx, val in enumerate(row_0_vals):
+        if val and "Paycheck Date:" in str(val):
+            for offset in range(1, 6):
+                if idx + offset < len(row_0_vals):
+                    parsed_dt = _parse_date_cell(row_0_vals[idx + offset])
+                    if parsed_dt:
+                        paycheck_date = parsed_dt
+                        break
+            break
+
+    # Robust week start/end extraction
+    week_start_date = None
+    week_end_date = None
+    row_1_vals = list(raw.iloc[1].values)
+    for idx, val in enumerate(row_1_vals):
+        if val and "Work Week:" in str(val):
+            dates_found = []
+            for offset in range(1, 10):
+                if idx + offset < len(row_1_vals):
+                    parsed_dt = _parse_date_cell(row_1_vals[idx + offset])
+                    if parsed_dt:
+                        dates_found.append(parsed_dt)
+            if len(dates_found) >= 2:
+                week_start_date = dates_found[0]
+                week_end_date = dates_found[1]
+            elif len(dates_found) == 1:
+                week_start_date = dates_found[0]
+            break
 
     # ── Parse detail rows (start at row index 3 = Excel row 4) ───────────────
     records = []

@@ -29,7 +29,7 @@ def weekly_summary(
             SUM(payroll_hours)                                                  AS total_payroll_hrs,
             SUM(billed_hours)                                                   AS total_billed_hrs,
             SUM(paid_hours)                                                     AS total_paid_hrs,
-            SUM(billed_hours - paid_hours)                                      AS pending_hrs,
+            GREATEST(SUM(COALESCE(payroll_hours, 0)) - SUM(COALESCE(paid_hours, 0)), 0) AS pending_hrs,
             COUNT(*) FILTER (WHERE result_simple = 'Follow up')                 AS followup_count,
             ROUND(
                 100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1
@@ -97,7 +97,7 @@ def top_followup_clients(
     conn: duckdb.DuckDBPyConnection,
     week_start: str | None = None,
     insurance: str | None = None,
-    limit: int = 15,
+    limit: int = 50,
     care_type: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -128,15 +128,16 @@ def top_followup_clients(
                 payroll_hours,
                 billed_hours,
                 paid_hours,
-                ROUND(billed_hours - paid_hours, 1)    AS pending_hrs,
+                GREATEST(ROUND(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 1), 0) AS pending_hrs,
                 ROUND(payroll_hours - billed_hours, 1) AS payroll_vs_billed,
                 result_detailed,
                 ROW_NUMBER() OVER (
                     PARTITION BY client_name_payroll
-                    ORDER BY (billed_hours - paid_hours) DESC
+                    ORDER BY GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0) DESC
                 ) AS rn
             FROM reconciliation
             WHERE result_simple = 'Follow up'
+              AND result_detailed != 'Not Billed'
               {date_clause}
               {ins_clause}
               {care_clause}
@@ -199,7 +200,7 @@ def weekly_recon_detail(
             payroll_hours,
             billed_hours,
             paid_hours,
-            ROUND(billed_hours - paid_hours, 1)        AS pending_hrs,
+            GREATEST(ROUND(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 1), 0) AS pending_hrs,
             ROUND(payroll_hours - billed_hours, 1)     AS payroll_vs_billed,
             ROUND(payroll_hours - paid_hours, 1)       AS payroll_vs_paid,
             result_simple                              AS status,
@@ -349,9 +350,10 @@ def rolling_trend(
     sql = f"""
         SELECT
             week_start_date,
+            SUM(payroll_hours)  AS payroll_hrs,
             SUM(billed_hours)   AS billed_hrs,
             SUM(paid_hours)     AS paid_hrs,
-            SUM(billed_hours - paid_hours) AS pending_hrs,
+            GREATEST(SUM(COALESCE(payroll_hours, 0)) - SUM(COALESCE(paid_hours, 0)), 0) AS pending_hrs,
             COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_count
         FROM reconciliation
         WHERE 1=1 {ins_filter} {care_filter} {date_filter}
@@ -450,9 +452,10 @@ def client_weekly_recon_with_dos(
         SELECT
             r.week_start_date,
             r.week_end_date,
+            r.payroll_hours,
             r.billed_hours,
             r.paid_hours,
-            ROUND(r.billed_hours - r.paid_hours, 2) AS pending_hours,
+            GREATEST(ROUND(COALESCE(r.payroll_hours, 0) - COALESCE(r.paid_hours, 0), 2), 0) AS pending_hours,
             COALESCE(MIN(rem.first_dos), r.week_start_date) AS first_dos
         FROM reconciliation r
         LEFT JOIN remittance rem ON (
@@ -461,7 +464,7 @@ def client_weekly_recon_with_dos(
             AND rem.is_latest = True
         )
         {where}
-        GROUP BY r.week_start_date, r.week_end_date, r.billed_hours, r.paid_hours
+        GROUP BY r.week_start_date, r.week_end_date, r.payroll_hours, r.billed_hours, r.paid_hours
         ORDER BY first_dos ASC
     """
     return conn.execute(sql, params).df()
@@ -479,6 +482,7 @@ def client_summary(conn: duckdb.DuckDBPyConnection, client_name: str):
             SUM(billed_hours)   AS ytd_billed_hrs,
             SUM(paid_hours)     AS ytd_paid_hrs,
             SUM(payroll_hours)  AS ytd_payroll_hrs,
+            GREATEST(SUM(COALESCE(payroll_hours, 0)) - SUM(COALESCE(paid_hours, 0)), 0) AS ytd_pending_hrs,
             COUNT(*)            AS total_weeks,
             COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_weeks,
             ROUND(100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1) AS collection_rate_pct
@@ -773,7 +777,7 @@ def recent_denials(
             payment_date,
             billed_hours AS billed_hrs,
             paid_hours AS paid_hrs,
-            ROUND(billed_hours - paid_hours, 1) AS pending_hrs,
+            GREATEST(ROUND(COALESCE(billed_hours, 0) - COALESCE(paid_hours, 0), 1), 0) AS pending_hrs,
             charge_amount AS billed_amt,
             payment_amount AS paid_amt,
             ROUND(charge_amount - payment_amount, 2) AS amt_delta,

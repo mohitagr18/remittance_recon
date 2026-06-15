@@ -388,6 +388,57 @@ def rebuild_reconciliation(
     except Exception as e:
         log.warning("Could not read existing overrides (this is expected on fresh schema): %s", e)
 
+    # Backup review_actions and rebill_tracker before deleting reconciliation
+    review_actions_data = []
+    try:
+        rows = conn.execute(
+            """SELECT ra.id, r.week_start_date, r.client_name_payroll, ra.action, ra.performed_by, ra.performed_at, ra.notes
+               FROM review_actions ra
+               JOIN reconciliation r ON ra.reconciliation_id = r.id"""
+        ).fetchall()
+        for r_row in rows:
+            review_actions_data.append({
+                "id": r_row[0],
+                "week_start_date": str(r_row[1]),
+                "client_name_payroll": r_row[2],
+                "action": r_row[3],
+                "performed_by": r_row[4],
+                "performed_at": r_row[5],
+                "notes": r_row[6]
+            })
+    except Exception as e:
+        log.warning("Could not backup review_actions: %s", e)
+
+    rebill_tracker_data = []
+    try:
+        rows = conn.execute(
+            """SELECT rt.id, r.week_start_date, r.client_name_payroll, rt.tcn, rt.denial_code, rt.rebill_date, rt.status, rt.notes, rt.created_at, rt.updated_at
+               FROM rebill_tracker rt
+               JOIN reconciliation r ON rt.reconciliation_id = r.id"""
+        ).fetchall()
+        for r_row in rows:
+            rebill_tracker_data.append({
+                "id": r_row[0],
+                "week_start_date": str(r_row[1]),
+                "client_name_payroll": r_row[2],
+                "tcn": r_row[3],
+                "denial_code": r_row[4],
+                "rebill_date": r_row[5],
+                "status": r_row[6],
+                "notes": r_row[7],
+                "created_at": r_row[8],
+                "updated_at": r_row[9]
+            })
+    except Exception as e:
+        log.warning("Could not backup rebill_tracker: %s", e)
+
+    # Delete foreign key references so we can truncate reconciliation
+    try:
+        conn.execute("DELETE FROM review_actions")
+        conn.execute("DELETE FROM rebill_tracker")
+    except Exception as e:
+        log.warning("Could not clear review_actions/rebill_tracker: %s", e)
+
     # 2. Re-create/clean the target table
     conn.execute("DELETE FROM reconciliation")
     conn.execute("DROP SEQUENCE IF EXISTS seq_reconciliation")
@@ -607,6 +658,49 @@ def rebuild_reconciliation(
 
     # 6. Bulk Insert to reconciliation table
     _write_reconciliation_rows(conn, reconciliation_rows)
+
+    # Restore review_actions and rebill_tracker with new reconciliation IDs
+    if review_actions_data or rebill_tracker_data:
+        log.info("Restoring review_actions and rebill_tracker with new reconciliation IDs...")
+        new_id_map = {}
+        db_rows = conn.execute("SELECT id, week_start_date, client_name_payroll FROM reconciliation").fetchall()
+        for r_id, ws, client in db_rows:
+            if client:
+                new_id_map[(str(ws), client.upper())] = r_id
+
+        # Restore review_actions
+        if review_actions_data:
+            params = []
+            for ra in review_actions_data:
+                if ra["client_name_payroll"]:
+                    new_recon_id = new_id_map.get((ra["week_start_date"], ra["client_name_payroll"].upper()))
+                    if new_recon_id:
+                        params.append([
+                            ra["id"], new_recon_id, ra["action"], ra["performed_by"], ra["performed_at"], ra["notes"]
+                        ])
+            if params:
+                conn.executemany(
+                    """INSERT INTO review_actions (id, reconciliation_id, action, performed_by, performed_at, notes)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    params
+                )
+                
+        # Restore rebill_tracker
+        if rebill_tracker_data:
+            params = []
+            for rt in rebill_tracker_data:
+                if rt["client_name_payroll"]:
+                    new_recon_id = new_id_map.get((rt["week_start_date"], rt["client_name_payroll"].upper()))
+                    if new_recon_id:
+                        params.append([
+                            rt["id"], new_recon_id, rt["tcn"], rt["denial_code"], rt["rebill_date"], rt["status"], rt["notes"], rt["created_at"], rt["updated_at"]
+                        ])
+            if params:
+                conn.executemany(
+                    """INSERT INTO rebill_tracker (id, reconciliation_id, tcn, denial_code, rebill_date, status, notes, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    params
+                )
 
     # 7. Collect database status counts for the summary report
     summary = PipelineSummary()

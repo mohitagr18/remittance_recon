@@ -52,8 +52,14 @@ import datetime
 date_preset = st.sidebar.selectbox(
     "📅 Date Period",
     ["Year to Date (YTD)", "Month to Date (MTD)", "Last 4 Weeks", "All Time", "Custom Range"],
-    index=0,
+    index=3,
     key="dash_date_preset"
+)
+
+show_archived = st.sidebar.checkbox(
+    "Show Archived (Older than 1 year and 1 week)",
+    value=False,
+    key="dash_show_archived"
 )
 
 start_date = None
@@ -66,6 +72,9 @@ elif date_preset == "Month to Date (MTD)":
     start_date = today.replace(day=1).strftime("%Y-%m-%d")
 elif date_preset == "Last 4 Weeks":
     start_date = (today - datetime.timedelta(weeks=4)).strftime("%Y-%m-%d")
+elif date_preset == "All Time":
+    if not show_archived:
+        start_date = (today - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
 elif date_preset == "Custom Range":
     col_s, col_e = st.sidebar.columns(2)
     with col_s:
@@ -105,6 +114,7 @@ def render_dashboard(care_type_filter: str | None):
 
     row            = summary.iloc[0]
     total_clients  = int(row.get("total_clients", 0) or 0)
+    payroll_hrs    = float(row.get("total_payroll_hrs", 0) or 0)
     billed_hrs     = float(row.get("total_billed_hrs", 0) or 0)
     paid_hrs       = float(row.get("total_paid_hrs", 0) or 0)
     pending_hrs    = float(row.get("pending_hrs", 0) or 0)
@@ -113,7 +123,8 @@ def render_dashboard(care_type_filter: str | None):
 
     render_kpi_row([
         {"label": "Total Clients",   "value": f"{total_clients:,}",  "sub": "", "color": "blue"},
-        {"label": "Billed Hours",    "value": f"{billed_hrs:,.0f}",  "sub": "", "color": "purple"},
+        {"label": "Payroll Hours",   "value": f"{payroll_hrs:,.0f}", "sub": "", "color": "purple"},
+        {"label": "Billed Hours",    "value": f"{billed_hrs:,.0f}",  "sub": "", "color": "blue"},
         {"label": "Paid Hours",      "value": f"{paid_hrs:,.0f}",    "sub": "", "color": "green"},
         {"label": "Pending Hours",   "value": f"{pending_hrs:,.0f}", "sub": "", "color": "yellow"},
         {"label": "Follow-Ups",      "value": str(followup_count),   "sub": "", "color": "red"},
@@ -163,7 +174,7 @@ def render_dashboard(care_type_filter: str | None):
     top_fu = queries.top_followup_clients(
         conn, 
         insurance=insurance, 
-        limit=15, 
+        limit=50, 
         care_type=care_type_filter,
         start_date=start_date,
         end_date=end_date

@@ -148,7 +148,7 @@ if not summary_df.empty:
     fu_weeks     = int(row.get("followup_weeks", 0) or 0)
     rate         = float(row.get("collection_rate_pct", 0) or 0)
 
-    ytd_pending  = ytd_billed - ytd_paid
+    ytd_pending  = float(row.get("ytd_pending_hrs", 0) or 0)
 
     st.markdown(
         f"""
@@ -162,6 +162,10 @@ if not summary_df.empty:
             <div>
                 <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Insurance</div>
                 <div style='font-size:1rem;font-weight:600;color:#4f8ef7;margin-top:2px;'>{ins}</div>
+            </div>
+            <div>
+                <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Payroll Hrs</div>
+                <div style='font-size:1rem;font-weight:600;color:#a78bfa;margin-top:2px;'>{ytd_payroll:,.1f}</div>
             </div>
             <div>
                 <div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Billed Hrs</div>
