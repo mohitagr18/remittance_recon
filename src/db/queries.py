@@ -381,37 +381,51 @@ def client_ledger(
 
     clauses = [
         """(
-            UPPER(client_name_combined) IN (UPPER(?), UPPER(?)) 
-            OR UPPER(client_first_name || ' ' || client_last_name) IN (UPPER(?), UPPER(?))
+            UPPER(rem.client_name_combined) IN (UPPER(?), UPPER(?)) 
+            OR UPPER(rem.client_first_name || ' ' || rem.client_last_name) IN (UPPER(?), UPPER(?))
+            OR UPPER(r.client_name_payroll) IN (UPPER(?), UPPER(?))
+            OR UPPER(r.client_name_remittance) IN (UPPER(?), UPPER(?))
         )"""
     ]
-    params = [client_name, stripped_name, client_name, stripped_name]
+    params = [
+        client_name, stripped_name, client_name, stripped_name,
+        client_name, stripped_name, client_name, stripped_name
+    ]
 
     if start_date:
-        clauses.append("first_dos >= ?")
+        clauses.append("COALESCE(rem.first_dos, r.week_start_date) >= ?")
         params.append(start_date)
     if end_date:
-        clauses.append("first_dos <= ?")
+        clauses.append("COALESCE(rem.first_dos, r.week_start_date) <= ?")
         params.append(end_date)
 
     where = "WHERE " + " AND ".join(clauses)
-    order_by = "ORDER BY first_dos ASC, payment_date ASC" if sort_asc else "ORDER BY payment_date DESC, first_dos DESC"
+    order_by = "ORDER BY COALESCE(rem.first_dos, r.week_start_date) ASC, rem.payment_date ASC" if sort_asc else "ORDER BY rem.payment_date DESC, COALESCE(rem.first_dos, r.week_start_date) DESC"
 
     sql = f"""
         SELECT
-            payment_date,
-            tcn,
-            first_dos,
-            last_dos,
-            transaction_type,
-            claim_number,
-            charge_amount,
-            payment_amount,
-            billed_hours,
-            paid_hours,
-            insurance,
-            match_status
-        FROM remittance
+            COALESCE(rem.first_dos, r.week_start_date) AS first_dos,
+            COALESCE(rem.last_dos, r.week_end_date) AS last_dos,
+            rem.payment_date,
+            rem.tcn,
+            rem.transaction_type,
+            rem.claim_number,
+            rem.charge_amount,
+            rem.payment_amount,
+            rem.billed_hours,
+            rem.paid_hours,
+            COALESCE(rem.insurance, r.insurance) AS insurance,
+            rem.match_status,
+            r.billed_hours AS week_billed_hours,
+            r.paid_hours AS week_paid_hours,
+            r.payroll_hours AS week_payroll_hours,
+            r.result_detailed AS week_result_detailed,
+            r.result_simple AS week_result_simple
+        FROM remittance rem
+        FULL OUTER JOIN reconciliation r ON (
+            UPPER(rem.client_name_combined) = UPPER(COALESCE(r.client_name_remittance, r.client_name_payroll))
+            AND rem.first_dos BETWEEN r.week_start_date AND r.week_end_date
+        )
         {where}
         {order_by}
     """

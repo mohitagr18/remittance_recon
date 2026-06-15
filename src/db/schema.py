@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS remittance (
     source_file         VARCHAR,
     loaded_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_latest           BOOLEAN DEFAULT TRUE,
-    UNIQUE (tcn)
+    UNIQUE (tcn, payment_date, transaction_type, batch)
 );
 
 -- ── Golden Record ─────────────────────────────────────────────────────────────

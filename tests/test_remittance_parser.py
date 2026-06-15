@@ -26,8 +26,8 @@ class TestParseRemittance:
                 assert field in r
 
     def test_tcn_deduplication(self):
-        tcns = [r["tcn"] for r in self.records if r["is_latest"]]
-        assert len(tcns) == len(set(tcns))
+        keys = [(r["tcn"], r["payment_date"], r["transaction_type"], r["batch"]) for r in self.records if r["is_latest"]]
+        assert len(keys) == len(set(keys))
 
     def test_is_latest_flags(self):
         latest_count = sum(1 for r in self.records if r["is_latest"])

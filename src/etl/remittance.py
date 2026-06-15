@@ -266,23 +266,15 @@ def _parse_int(val: Any) -> int | None:
 
 def _deduplicate_tcns(records: list[dict]) -> list[dict]:
     """
-    For each TCN, keep only the most-recent record as is_latest=True.
-    All older records for the same TCN are marked is_latest=False.
+    Deduplicate identical records sharing (tcn, payment_date, transaction_type, batch).
+    Keep only the first occurrence (or one of them) as is_latest=True.
     """
-    # Group by TCN, tracking max payment_date index
-    latest_idx: dict[str, int] = {}  # tcn → index of latest record
-    for i, r in enumerate(records):
-        tcn = r["tcn"]
-        if tcn not in latest_idx:
-            latest_idx[tcn] = i
+    seen = set()
+    for r in records:
+        key = (r["tcn"], r["payment_date"], r["transaction_type"], r["batch"])
+        if key not in seen:
+            seen.add(key)
+            r["is_latest"] = True
         else:
-            prev_date = records[latest_idx[tcn]]["payment_date"]
-            curr_date = r["payment_date"]
-            if curr_date and (prev_date is None or curr_date > prev_date):
-                latest_idx[tcn] = i
-
-    latest_set = set(latest_idx.values())
-    for i, r in enumerate(records):
-        r["is_latest"] = i in latest_set
-
+            r["is_latest"] = False
     return records
