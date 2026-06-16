@@ -50,38 +50,34 @@ def inject_css():
         }
 
         /* ── Sidebar ─────────────────────────────────────────── */
-        section[data-testid="stSidebar"] {
+        [data-testid="stSidebar"] {
             background: #13151f !important;
             border-right: 1px solid #1e2130;
         }
-        /* Nav links — make them bright and readable */
-        section[data-testid="stSidebar"] a,
-        section[data-testid="stSidebar"] [data-testid="stSidebarNavLink"],
-        section[data-testid="stSidebar"] span,
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] li {
+        /* Make all text/link/button labels in sidebar large and readable */
+        [data-testid="stSidebar"] * {
             color: #c8cfe0 !important;
-            font-size: 0.88rem;
+            font-size: 1.15rem !important;
         }
-        section[data-testid="stSidebar"] [data-testid="stSidebarNavLink"]:hover {
+        [data-testid="stSidebar"] button:hover,
+        [data-testid="stSidebar"] a:hover {
             background: #1e2130 !important;
+        }
+        [data-testid="stSidebar"] button:hover *,
+        [data-testid="stSidebar"] a:hover * {
             color: #ffffff !important;
         }
-        section[data-testid="stSidebar"] [aria-selected="true"] {
-            background: #1e2840 !important;
-            color: #4f8ef7 !important;
-            font-weight: 600;
+        /* Sidebar brand headers */
+        [data-testid="stSidebar"] .sidebar-brand-title,
+        [data-testid="stSidebar"] .sidebar-brand-title * {
+            font-size: 1.5rem !important;
+            font-weight: 700 !important;
+            color: #e8eaf0 !important;
         }
-        /* Sidebar filter labels */
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] .stSelectbox label,
-        section[data-testid="stSidebar"] .stMultiselect label,
-        section[data-testid="stSidebar"] .stToggle label {
+        [data-testid="stSidebar"] .sidebar-brand-sub,
+        [data-testid="stSidebar"] .sidebar-brand-sub * {
+            font-size: 0.9rem !important;
             color: #8892a4 !important;
-            font-size: 0.75rem !important;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            font-weight: 600 !important;
         }
 
         /* ── Page headings & body text ───────────────────────── */
@@ -150,20 +146,37 @@ def inject_css():
         .kpi-sub { font-size: 0.76rem; color: #8892a4; }
 
         /* ── Tabs ─────────────────────────────────────────────── */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 4px;
+        [data-baseweb="tab-list"],
+        [role="tablist"] {
+            gap: 8px;
             background: transparent;
+            margin-bottom: 0.8rem;
         }
-        .stTabs [data-baseweb="tab"] {
-            border-radius: 6px;
-            padding: 6px 16px;
-            background: #1e2130;
-            color: #8892a4 !important;
-            font-size: 0.85rem;
-            font-weight: 500;
+        [data-baseweb="tab"],
+        button[role="tab"],
+        [data-testid="stTab"],
+        .stTabs button {
+            border-radius: 6px !important;
+            padding: 10px 20px !important;
+            background: #1e2130 !important;
+            transition: background 0.2s ease, color 0.2s ease;
         }
-        .stTabs [aria-selected="true"] {
+        [data-baseweb="tab"] *,
+        button[role="tab"] *,
+        [data-testid="stTab"] *,
+        .stTabs button * {
+            color: #c8cfe0 !important;
+            font-size: 1.2rem !important;
+            font-weight: 700 !important;
+        }
+        [aria-selected="true"],
+        button[aria-selected="true"],
+        [data-testid="stTab"][aria-selected="true"] {
             background: #4f8ef7 !important;
+        }
+        [aria-selected="true"] *,
+        button[aria-selected="true"] *,
+        [data-testid="stTab"][aria-selected="true"] * {
             color: #fff !important;
         }
 

@@ -30,6 +30,7 @@ from src.ui.components.filters import week_filter, insurance_filter, _get_conn
 from src.db import queries
 importlib.reload(queries)
 conn = _get_conn()
+inject_css()
 
 # Clear dashboard table selections if redirect flag is set
 if st.session_state.get("clear_dashboard_selections"):
@@ -57,7 +58,7 @@ if max_date_res and max_date_res[0]:
     max_year = pd.to_datetime(max_date_res[0]).year
 
 # ── Top-level filters ─────────────────────────────────────────────────────────
-col_p, col_i, col_a = st.columns([2, 2, 1])
+col_p, col_i, col_a, _ = st.columns([1.5, 1.5, 1.0, 3.0])
 
 # Date range selection
 import datetime

@@ -98,7 +98,7 @@ if st.session_state.selected_client_ledger:
         st.session_state.skilled_selector = None
 
 # ── Client selectors ─────────────────────────────────────────────────────────
-col_s, col_u, col_a = st.columns([2, 2, 1])
+col_s, col_u, col_a, _ = st.columns([1.5, 1.5, 1.0, 3.0])
 
 with col_s:
     st.selectbox(

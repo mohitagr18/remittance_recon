@@ -38,7 +38,7 @@ st.markdown(
 conn = _get_conn()
 
 # ── Top-level filters ─────────────────────────────────────────────────────────
-col_w, col_i, col_r, col_f = st.columns([2, 2, 2, 1])
+col_w, col_i, col_r, col_f, _ = st.columns([2.2, 1.5, 1.5, 1.0, 2.8])
 with col_w:
     week = week_filter("wb_week", in_sidebar=False)
 with col_i:

@@ -34,8 +34,8 @@ with st.sidebar:
     st.markdown(
         """
         <div style='padding:8px 0 8px;'>
-            <div style='font-size:1.15rem;font-weight:700;color:#e8eaf0;'>💰 ReconApp</div>
-            <div style='font-size:0.72rem;color:#8892a4;margin-top:2px;'>Billing Reconciliation Platform</div>
+            <div class='sidebar-brand-title'>💰 ReconApp</div>
+            <div class='sidebar-brand-sub'>Billing Reconciliation Platform</div>
         </div>
         <hr style='border-color:#1e2130;margin:8px 0 16px;'/>
         """,
