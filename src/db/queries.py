@@ -451,27 +451,29 @@ def client_ledger(
             GROUP BY client_name_combined, first_dos, payment_date
         ),
         rem_agg AS (
-            -- Aggregate over payment dates: select max billed/charge and sum paid.
+            -- One row per (DOS, payment_date) so the ledger/drilldown shows all payments.
+            -- Billed hours: take MAX across any split claims on the same day.
+            -- Paid hours: SUM across all partial payments on the same day.
             SELECT
                 rem_daily.client_name_combined,
                 rem_daily.first_dos,
+                rem_daily.payment_date,
                 GREATEST(MAX(rem_daily.billed_hours), 0.0)    AS billed_hours,
                 GREATEST(MAX(rem_daily.charge_amount), 0.0)   AS charge_amount,
                 SUM(rem_daily.paid_hours)                     AS paid_hours,
                 SUM(rem_daily.payment_amount)                 AS payment_amount,
-                MAX(rem_daily.payment_date)                   AS payment_date,
                 MAX(rem_daily.insurance)                      AS insurance,
                 MAX(rem_daily.match_status)                   AS match_status,
                 (SELECT rem2.tcn
                  FROM remittance rem2
                  WHERE rem2.client_name_combined = rem_daily.client_name_combined
                    AND rem2.first_dos = rem_daily.first_dos
+                   AND rem2.payment_date = rem_daily.payment_date
                    AND rem2.is_latest = True
                    AND rem2.transaction_type NOT IN ('Denial/Reversal')
-                 ORDER BY rem2.payment_date DESC NULLS LAST, rem2.tcn
                  LIMIT 1) AS tcn
             FROM rem_daily
-            GROUP BY rem_daily.client_name_combined, rem_daily.first_dos
+            GROUP BY rem_daily.client_name_combined, rem_daily.first_dos, rem_daily.payment_date
         )
         SELECT
             COALESCE(ra.first_dos, r.week_start_date) AS first_dos,

@@ -290,14 +290,18 @@ def render_weekly_recon(care_type: str | None = None):
                 if p_hrs < 0 or p_amt < 0:
                     return "Reversal"
                 if b_hrs > 0:
-                    if p_hrs >= b_hrs:
+                    if p_hrs > b_hrs + 0.9:
+                        return "Paid Extra"
+                    elif p_hrs >= b_hrs:
                         return "Paid in Full"
                     elif p_hrs == 0:
                         return "Denial / Unpaid"
                     else:
                         return "Short Paid"
                 if b_amt > 0:
-                    if p_amt >= b_amt:
+                    if p_amt > b_amt + 0.9:
+                        return "Paid Extra"
+                    elif p_amt >= b_amt:
                         return "Paid in Full"
                     elif p_amt == 0:
                         return "Denial / Unpaid"

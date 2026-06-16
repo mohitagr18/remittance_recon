@@ -335,14 +335,18 @@ if not ledger_df.empty:
         if p_hrs < 0 or p_amt < 0:
             return "Reversal"
         if b_hrs > 0:
-            if p_hrs >= b_hrs:
+            if p_hrs > b_hrs + 0.9:
+                return "Paid Extra"
+            elif p_hrs >= b_hrs:
                 return "Paid in Full"
             elif p_hrs == 0:
                 return "Denial / Unpaid"
             else:
                 return f"Short Paid ({b_hrs - p_hrs:.1f} hrs remain)"
         if b_amt > 0:
-            if p_amt >= b_amt:
+            if p_amt > b_amt + 0.9:
+                return "Paid Extra"
+            elif p_amt >= b_amt:
                 return "Paid in Full"
             elif p_amt == 0:
                 return "Denial / Unpaid"
@@ -379,10 +383,17 @@ if not ledger_df.empty:
             return latest_row.get("tcn") or "Multiple"
 
     def get_payment_date_display(group):
-        dates = group["payment_date"].dropna()
-        if dates.empty:
+        dates = group["payment_date"].dropna().dt.date.unique()
+        if len(dates) == 0:
             return None
-        return dates.max()
+        if len(dates) == 1:
+            return dates[0]
+        # Multiple payment dates - show all sorted
+        sorted_dates = sorted(dates)
+        if len(sorted_dates) <= 3:
+            return ", ".join(str(d) for d in sorted_dates)
+        # If more than 3, show first and last with count
+        return f"{sorted_dates[0]} ... {sorted_dates[-1]} ({len(sorted_dates)} payments)"
 
     def get_status_display(group):
         detailed = group["week_result_detailed"].dropna().unique()
@@ -406,11 +417,15 @@ if not ledger_df.empty:
         if p_hrs > 0:
             if b_hrs < p_hrs - 0.9:
                 return "Billed Short"
+            if pd_hrs > b_hrs + 0.9:
+                return "Paid Extra"
             if pd_hrs < b_hrs - 0.9:
                 return f"Short Paid ({b_hrs - pd_hrs:.1f} hrs remain)"
             if pd_hrs < p_hrs - 0.9:
                 return "Short Paid"
         else:
+            if pd_hrs > b_hrs + 0.9:
+                return "Paid Extra"
             if pd_hrs < b_hrs - 0.9:
                 return "Short Paid"
         return "Paid in Full"
@@ -504,7 +519,7 @@ else:
         column_config={
             "first_dos":          st.column_config.DateColumn("First DOS"),
             "last_dos":           st.column_config.DateColumn("Last DOS"),
-            "payment_date":       st.column_config.DateColumn("Payment Date"),
+            "payment_date":       st.column_config.TextColumn("Payment Date"),
             "reconciled_status":  st.column_config.TextColumn("Status", width="medium"),
             "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
             "billed_hours":       st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
