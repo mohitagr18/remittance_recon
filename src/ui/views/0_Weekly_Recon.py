@@ -239,6 +239,10 @@ if selected_rows:
     if rem_df.empty:
         rem_df = queries.client_ledger(conn, client_name, start_date=w_start, end_date=w_end)
 
+    if not rem_df.empty:
+        # Filter out rows that represent reconciliation weeks without remittance data (unbilled)
+        rem_df = rem_df[rem_df["tcn"].notna() & (rem_df["tcn"] != "—") & (rem_df["tcn"] != "")]
+
     if rem_df.empty:
         st.info("ℹ️ No claim-level remittance records found for this client during this service week.", icon="ℹ️")
     else:

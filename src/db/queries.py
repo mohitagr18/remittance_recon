@@ -389,10 +389,10 @@ def client_ledger(
     date_clauses = []
     date_params = []
     if start_date:
-        date_clauses.append("ra.first_dos >= ?")
+        date_clauses.append("COALESCE(ra.first_dos, r.week_start_date) >= ?")
         date_params.append(start_date)
     if end_date:
-        date_clauses.append("ra.first_dos <= ?")
+        date_clauses.append("COALESCE(ra.first_dos, r.week_start_date) <= ?")
         date_params.append(end_date)
     date_filter = (" AND " + " AND ".join(date_clauses)) if date_clauses else ""
 
@@ -425,15 +425,15 @@ def client_ledger(
             GROUP BY rem.client_name_combined, rem.first_dos
         )
         SELECT
-            ra.first_dos,
-            ra.first_dos                                           AS last_dos,
+            COALESCE(ra.first_dos, r.week_start_date) AS first_dos,
+            COALESCE(ra.first_dos, r.week_end_date)   AS last_dos,
             ra.payment_date,
             ra.tcn,
             ra.charge_amount,
             ra.payment_amount,
             ra.billed_hours,
             ra.paid_hours,
-            ra.insurance,
+            COALESCE(ra.insurance, r.insurance)       AS insurance,
             ra.match_status,
             r.billed_hours   AS week_billed_hours,
             r.paid_hours     AS week_paid_hours,
@@ -441,16 +441,25 @@ def client_ledger(
             r.result_detailed AS week_result_detailed,
             r.result_simple   AS week_result_simple
         FROM rem_agg ra
-        INNER JOIN reconciliation r ON (
+        FULL OUTER JOIN reconciliation r ON (
             UPPER(ra.client_name_combined) = UPPER(COALESCE(r.client_name_remittance, r.client_name_payroll))
             AND ra.first_dos BETWEEN r.week_start_date AND r.week_end_date
         )
-        WHERE UPPER(ra.client_name_combined) IN (UPPER(?), UPPER(?))
+        WHERE (
+            UPPER(ra.client_name_combined) IN (UPPER(?), UPPER(?))
+            OR UPPER(r.client_name_payroll) IN (UPPER(?), UPPER(?))
+            OR UPPER(r.client_name_remittance) IN (UPPER(?), UPPER(?))
+        )
         {date_filter}
-        {'ORDER BY ra.first_dos ASC, ra.payment_date ASC' if sort_asc else 'ORDER BY ra.payment_date DESC, ra.first_dos DESC'}
+        {'ORDER BY COALESCE(ra.first_dos, r.week_start_date) ASC, ra.payment_date ASC' if sort_asc else 'ORDER BY ra.payment_date DESC, COALESCE(ra.first_dos, r.week_start_date) DESC'}
     """
-    # params order: CTE name filter (2) + outer WHERE name filter (2) + date params (0-2)
-    all_params = [client_name, stripped_name, client_name, stripped_name] + date_params
+    # params order: CTE name filter (2) + outer WHERE name filter (6) + date params (0-2)
+    all_params = [
+        client_name, stripped_name,
+        client_name, stripped_name,
+        client_name, stripped_name,
+        client_name, stripped_name
+    ] + date_params
     return conn.execute(sql, all_params).df()
 
 

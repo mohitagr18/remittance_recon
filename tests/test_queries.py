@@ -62,7 +62,26 @@ class TestQueries:
         # Test sorted and filtered retrieval
         df_sorted = q.client_ledger(conn, client, sort_asc=True)
         if len(df_sorted) > 1:
-            assert df_sorted.iloc[0]["first_dos"] <= df_sorted.iloc[-1]["first_dos"]
+            # Cast first_dos to date if it's datetime for comparison
+            import datetime
+            d1 = df_sorted.iloc[0]["first_dos"]
+            d2 = df_sorted.iloc[-1]["first_dos"]
+            d1_val = d1.date() if isinstance(d1, datetime.datetime) else d1
+            d2_val = d2.date() if isinstance(d2, datetime.datetime) else d2
+            assert d1_val <= d2_val
+
+        # Test unbilled week retrieval
+        unbilled_recon = recon[(recon["payroll_hours"] > 0) & (recon["billed_hours"] == 0)]
+        if not unbilled_recon.empty:
+            client = unbilled_recon.iloc[0]["client_name_payroll"]
+            df = q.client_ledger(conn, client)
+            week_start = unbilled_recon.iloc[0]["week_start_date"]
+            import datetime
+            week_start_date = week_start.date() if isinstance(week_start, datetime.datetime) else week_start
+            
+            # Verify that the unbilled week's start date is returned in df["first_dos"]
+            first_dos_dates = [d.date() if isinstance(d, datetime.datetime) else d for d in df["first_dos"].dropna()]
+            assert week_start_date in first_dos_dates, f"Unbilled week start date {week_start_date} not found in first_dos for {client}"
 
     def test_client_weekly_recon_with_dos(self, conn):
         recon = q.all_reconciliation(conn)
