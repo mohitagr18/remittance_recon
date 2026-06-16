@@ -313,6 +313,18 @@ if not ledger_df.empty:
         ledger_df = ledger_df[is_unresolved_payroll | is_unresolved_remit]
 
         if not ledger_df.empty:
+            # Map first_dos to Wednesday-start week to group daily claims of the same week together
+            import datetime
+            def to_week_start(val):
+                if pd.isna(val):
+                    return None
+                dt = pd.to_datetime(val).date()
+                offset = (dt.weekday() - 2) % 7
+                return dt - datetime.timedelta(days=offset)
+
+            ledger_df["week_start"] = ledger_df["first_dos"].apply(to_week_start)
+            ledger_df["week_end"] = ledger_df["week_start"].apply(lambda d: d + datetime.timedelta(days=6) if d else None)
+
             def get_tcn_display(group):
                 tcns = group["tcn"].dropna().unique()
                 tcns = [t for t in tcns if t != "—" and t != ""]
@@ -362,22 +374,46 @@ if not ledger_df.empty:
                 return "Paid in Full"
 
             consolidated = []
-            for (f_dos, l_dos), group in ledger_df.groupby(["first_dos", "last_dos"]):
-                max_charge = group["charge_amount"].max()
+            for (w_start, w_end), group in ledger_df.groupby(["week_start", "week_end"]):
+                w_billed_hrs = group["week_billed_hours"].iloc[0]
+                w_paid_hrs = group["week_paid_hours"].iloc[0]
+                
+                # Find hourly rate from the claims in this group
+                rate = None
+                for _, r in group.iterrows():
+                    b_hrs = abs(float(r.get("billed_hours") or 0.0))
+                    charge = abs(float(r.get("charge_amount") or 0.0))
+                    if b_hrs > 0.1 and charge > 0.0:
+                        rate = charge / b_hrs
+                        break
+                if rate is None:
+                    for _, r in group.iterrows():
+                        p_hrs = abs(float(r.get("paid_hours") or 0.0))
+                        pay = abs(float(r.get("payment_amount") or 0.0))
+                        if p_hrs > 0.1 and pay > 0.0:
+                            rate = pay / p_hrs
+                            break
+                
                 sum_payment = group["payment_amount"].sum()
+                if abs(w_billed_hrs - w_paid_hrs) <= 0.01:
+                    charge_amount = sum_payment
+                elif rate is not None:
+                    charge_amount = round(w_billed_hrs * rate, 2)
+                else:
+                    charge_amount = group["charge_amount"].max()
                 
                 consolidated.append({
-                    "first_dos": f_dos,
-                    "last_dos": l_dos,
+                    "first_dos": w_start,
+                    "last_dos": w_end,
                     "payment_date": get_payment_date_display(group),
                     "reconciled_status": get_status_display(group),
                     "week_payroll_hours": group["week_payroll_hours"].iloc[0],
-                    "billed_hours": group["week_billed_hours"].iloc[0],
-                    "paid_hours": group["week_paid_hours"].iloc[0],
+                    "billed_hours": w_billed_hrs,
+                    "paid_hours": w_paid_hrs,
                     "week_pending_hrs": group["week_pending_hrs"].iloc[0],
-                    "charge_amount": max_charge,
+                    "charge_amount": charge_amount,
                     "payment_amount": sum_payment,
-                    "amt_delta": max(max_charge - sum_payment, 0.0),
+                    "amt_delta": max(round(charge_amount - sum_payment, 2), 0.0),
                     "tcn": get_tcn_display(group),
                 })
             

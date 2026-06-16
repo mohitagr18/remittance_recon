@@ -375,61 +375,83 @@ def client_ledger(
     sort_asc: bool = True,
 ):
 
-    """All remittance records for a given client (remittance name match)."""
+    """All remittance records for a given client (remittance name match).
+
+    Aggregates multiple remittance rows per DOS into a single net row per date of service,
+    showing the current state. Multiple claim lifecycle entries (original, reversal,
+    re-bill, different payment batches) for the same DOS are consolidated so the user
+    sees one row per DOS rather than multiple duplicate rows.
+    """
     import re
     stripped_name = re.sub(r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$", "", client_name, flags=re.IGNORECASE).strip()
 
-    clauses = [
-        """(
-            UPPER(rem.client_name_combined) IN (UPPER(?), UPPER(?)) 
-            OR UPPER(rem.client_first_name || ' ' || rem.client_last_name) IN (UPPER(?), UPPER(?))
-            OR UPPER(r.client_name_payroll) IN (UPPER(?), UPPER(?))
-            OR UPPER(r.client_name_remittance) IN (UPPER(?), UPPER(?))
-        )"""
-    ]
-    params = [
-        client_name, stripped_name, client_name, stripped_name,
-        client_name, stripped_name, client_name, stripped_name
-    ]
-
+    # Build the date filter clause for the outer query
+    date_clauses = []
+    date_params = []
     if start_date:
-        clauses.append("COALESCE(rem.first_dos, r.week_start_date) >= ?")
-        params.append(start_date)
+        date_clauses.append("ra.first_dos >= ?")
+        date_params.append(start_date)
     if end_date:
-        clauses.append("COALESCE(rem.first_dos, r.week_start_date) <= ?")
-        params.append(end_date)
-
-    where = "WHERE " + " AND ".join(clauses)
-    order_by = "ORDER BY COALESCE(rem.first_dos, r.week_start_date) ASC, rem.payment_date ASC" if sort_asc else "ORDER BY rem.payment_date DESC, COALESCE(rem.first_dos, r.week_start_date) DESC"
+        date_clauses.append("ra.first_dos <= ?")
+        date_params.append(end_date)
+    date_filter = (" AND " + " AND ".join(date_clauses)) if date_clauses else ""
 
     sql = f"""
-        SELECT
-            COALESCE(rem.first_dos, r.week_start_date) AS first_dos,
-            COALESCE(rem.last_dos, r.week_end_date) AS last_dos,
-            rem.payment_date,
-            rem.tcn,
-            rem.transaction_type,
-            rem.claim_number,
-            rem.charge_amount,
-            rem.payment_amount,
-            rem.billed_hours,
-            rem.paid_hours,
-            COALESCE(rem.insurance, r.insurance) AS insurance,
-            rem.match_status,
-            r.billed_hours AS week_billed_hours,
-            r.paid_hours AS week_paid_hours,
-            r.payroll_hours AS week_payroll_hours,
-            r.result_detailed AS week_result_detailed,
-            r.result_simple AS week_result_simple
-        FROM remittance rem
-        FULL OUTER JOIN reconciliation r ON (
-            UPPER(rem.client_name_combined) = UPPER(COALESCE(r.client_name_remittance, r.client_name_payroll))
-            AND rem.first_dos BETWEEN r.week_start_date AND r.week_end_date
+        WITH rem_agg AS (
+            -- Aggregate all remittance rows per DOS (client + first_dos), summing hours/amounts.
+            -- Only uses is_latest=True rows to avoid stale duplicates.
+            -- TCN is selected via scalar subquery: prefers non-reversal row with latest payment_date.
+            SELECT
+                rem.client_name_combined,
+                rem.first_dos,
+                SUM(rem.billed_hours)    AS billed_hours,
+                SUM(rem.paid_hours)      AS paid_hours,
+                SUM(rem.charge_amount)   AS charge_amount,
+                SUM(rem.payment_amount)  AS payment_amount,
+                MAX(rem.payment_date)    AS payment_date,
+                MAX(rem.insurance)       AS insurance,
+                MAX(rem.match_status)    AS match_status,
+                (SELECT rem2.tcn
+                 FROM remittance rem2
+                 WHERE rem2.client_name_combined = rem.client_name_combined
+                   AND rem2.first_dos = rem.first_dos
+                   AND rem2.is_latest = True
+                   AND rem2.transaction_type NOT IN ('Denial/Reversal')
+                 ORDER BY rem2.payment_date DESC NULLS LAST, rem2.tcn
+                 LIMIT 1) AS tcn
+            FROM remittance rem
+            WHERE UPPER(rem.client_name_combined) IN (UPPER(?), UPPER(?))
+              AND rem.is_latest = True
+            GROUP BY rem.client_name_combined, rem.first_dos
         )
-        {where}
-        {order_by}
+        SELECT
+            ra.first_dos,
+            ra.first_dos                                           AS last_dos,
+            ra.payment_date,
+            ra.tcn,
+            ra.charge_amount,
+            ra.payment_amount,
+            ra.billed_hours,
+            ra.paid_hours,
+            ra.insurance,
+            ra.match_status,
+            r.billed_hours   AS week_billed_hours,
+            r.paid_hours     AS week_paid_hours,
+            r.payroll_hours  AS week_payroll_hours,
+            r.result_detailed AS week_result_detailed,
+            r.result_simple   AS week_result_simple
+        FROM rem_agg ra
+        INNER JOIN reconciliation r ON (
+            UPPER(ra.client_name_combined) = UPPER(COALESCE(r.client_name_remittance, r.client_name_payroll))
+            AND ra.first_dos BETWEEN r.week_start_date AND r.week_end_date
+        )
+        WHERE UPPER(ra.client_name_combined) IN (UPPER(?), UPPER(?))
+        {date_filter}
+        {'ORDER BY ra.first_dos ASC, ra.payment_date ASC' if sort_asc else 'ORDER BY ra.payment_date DESC, ra.first_dos DESC'}
     """
-    return conn.execute(sql, params).df()
+    # params order: CTE name filter (2) + outer WHERE name filter (2) + date params (0-2)
+    all_params = [client_name, stripped_name, client_name, stripped_name] + date_params
+    return conn.execute(sql, all_params).df()
 
 
 def client_weekly_recon_with_dos(
