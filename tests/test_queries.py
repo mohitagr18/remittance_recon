@@ -182,5 +182,52 @@ class TestQueries:
             conn.execute("DELETE FROM remittance WHERE client_name_combined = ?", [client_name])
             conn.execute("DELETE FROM reconciliation WHERE client_name_remittance = ?", [client_name])
 
+    def test_pending_hours_summation(self, conn):
+        """
+        Verify that total pending hours is calculated by summing weekly client pending hours
+        and is not cancelled out by weeks where paid hours exceed payroll hours.
+        """
+        client_name = "TEST_PENDING_SUMMATION_CLIENT"
+        
+        # Clean up
+        conn.execute("DELETE FROM reconciliation WHERE client_name_payroll = ?", [client_name])
+        
+        try:
+            # Week 1: 10 payroll, 20 paid (overpayment, pending should be 0)
+            conn.execute(
+                """
+                INSERT INTO reconciliation (
+                    id, week_start_date, week_end_date, client_name_payroll, client_name_remittance,
+                    payroll_hours, billed_hours, paid_hours, result_simple, care_type
+                ) VALUES (
+                    nextval('seq_reconciliation'), '2026-02-01', '2026-02-07', ?, ?,
+                    10.0, 10.0, 20.0, 'Good', 'Unskilled'
+                )
+                """,
+                [client_name, client_name]
+            )
+            # Week 2: 15 payroll, 0 paid (pending should be 15)
+            conn.execute(
+                """
+                INSERT INTO reconciliation (
+                    id, week_start_date, week_end_date, client_name_payroll, client_name_remittance,
+                    payroll_hours, billed_hours, paid_hours, result_simple, care_type
+                ) VALUES (
+                    nextval('seq_reconciliation'), '2026-02-08', '2026-02-14', ?, ?,
+                    15.0, 15.0, 0.0, 'Follow up', 'Unskilled'
+                )
+                """,
+                [client_name, client_name]
+            )
+            
+            # 1. Test client_summary pending hours
+            summary_df = q.client_summary(conn, client_name, 'Unskilled')
+            assert len(summary_df) == 1
+            # If the calculation is correct, pending hours should be 15.0 (not 15 - 10 = 5.0)
+            assert float(summary_df.iloc[0]["ytd_pending_hrs"]) == 15.0
+            
+        finally:
+            conn.execute("DELETE FROM reconciliation WHERE client_name_payroll = ?", [client_name])
+
 
 

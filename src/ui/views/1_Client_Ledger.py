@@ -49,39 +49,52 @@ conn = _get_conn()
 # Initialize session state for selected client if not present
 if "selected_client_ledger" not in st.session_state:
     st.session_state.selected_client_ledger = None
+if "selected_care_type" not in st.session_state:
+    st.session_state.selected_care_type = None
+
+# Suffix cleaning regex pattern
+import re
+_ROLE_SUFFIX = re.compile(
+    r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$",
+    re.IGNORECASE,
+)
+def strip_suffix(name: str) -> str:
+    return _ROLE_SUFFIX.sub("", name).strip()
 
 def on_skilled_change():
     val = st.session_state.skilled_selector
     if val:
         st.session_state.selected_client_ledger = val
         st.session_state.unskilled_selector = None  # Reset unskilled
+        st.session_state.selected_care_type = "Skilled"
 
 def on_unskilled_change():
     val = st.session_state.unskilled_selector
     if val:
         st.session_state.selected_client_ledger = val
         st.session_state.skilled_selector = None  # Reset skilled
+        st.session_state.selected_care_type = "Unskilled"
 
 # Fetch client lists by care type
 try:
-    skilled_clients = conn.execute("""
+    raw_skilled = conn.execute("""
         SELECT DISTINCT client_name_payroll
         FROM reconciliation
         WHERE care_type = 'Skilled' AND client_name_payroll IS NOT NULL
-        ORDER BY client_name_payroll
     """).df()["client_name_payroll"].tolist()
+    skilled_clients = sorted(list(set(strip_suffix(name) for name in raw_skilled)))
 
-    unskilled_clients = conn.execute("""
+    raw_unskilled = conn.execute("""
         SELECT DISTINCT client_name_payroll
         FROM reconciliation
         WHERE care_type = 'Unskilled' AND client_name_payroll IS NOT NULL
-        ORDER BY client_name_payroll
     """).df()["client_name_payroll"].tolist()
+    unskilled_clients = sorted(list(set(strip_suffix(name) for name in raw_unskilled)))
 except Exception:
     # Fallback to all if table format differs
     clients = queries.all_clients(conn)
-    skilled_clients = clients
-    unskilled_clients = clients
+    skilled_clients = sorted(list(set(strip_suffix(name) for name in clients)))
+    unskilled_clients = sorted(list(set(strip_suffix(name) for name in clients)))
 
 if not skilled_clients and not unskilled_clients:
     st.info("No clients found. Run the ETL pipeline first.", icon="ℹ️")
@@ -90,10 +103,16 @@ if not skilled_clients and not unskilled_clients:
 # Initialize selectbox state from selected_client_ledger if set
 if st.session_state.selected_client_ledger:
     client = st.session_state.selected_client_ledger
-    if client in skilled_clients:
+    if st.session_state.selected_care_type is None:
+        if client in skilled_clients:
+            st.session_state.selected_care_type = "Skilled"
+        elif client in unskilled_clients:
+            st.session_state.selected_care_type = "Unskilled"
+
+    if st.session_state.selected_care_type == "Skilled" and client in skilled_clients:
         st.session_state.skilled_selector = client
         st.session_state.unskilled_selector = None
-    elif client in unskilled_clients:
+    elif st.session_state.selected_care_type == "Unskilled" and client in unskilled_clients:
         st.session_state.unskilled_selector = client
         st.session_state.skilled_selector = None
 
@@ -136,7 +155,7 @@ if not selected:
     st.stop()
 
 # ── Summary card ────────────────────────────────────────────────────────────
-summary_df = queries.client_summary(conn, selected)
+summary_df = queries.client_summary(conn, selected, care_type=st.session_state.selected_care_type)
 
 if not summary_df.empty:
     row = summary_df.iloc[0]
@@ -193,7 +212,7 @@ if not summary_df.empty:
     )
 
 # ── Weekly billed vs paid chart & pending hours chart ────────────────────────
-client_recon = queries.client_weekly_recon_with_dos(conn, selected)
+client_recon = queries.client_weekly_recon_with_dos(conn, selected, care_type=st.session_state.selected_care_type)
 
 if "client_chart_rev" not in st.session_state:
     st.session_state["client_chart_rev"] = 0
@@ -271,9 +290,9 @@ if not summary_df.empty and "client_name_remittance" in summary_df.columns:
     if alt:
         rem_name = alt
 
-ledger_df = queries.client_ledger(conn, rem_name, sort_asc=True)
+ledger_df = queries.client_ledger(conn, rem_name, sort_asc=True, care_type=st.session_state.selected_care_type)
 if ledger_df.empty:
-    ledger_df = queries.client_ledger(conn, selected, sort_asc=True)
+    ledger_df = queries.client_ledger(conn, selected, sort_asc=True, care_type=st.session_state.selected_care_type)
 
 if selected_week:
     import datetime

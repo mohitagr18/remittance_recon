@@ -29,7 +29,7 @@ def weekly_summary(
             SUM(payroll_hours)                                                  AS total_payroll_hrs,
             SUM(billed_hours)                                                   AS total_billed_hrs,
             SUM(paid_hours)                                                     AS total_paid_hrs,
-            GREATEST(SUM(COALESCE(payroll_hours, 0)) - SUM(COALESCE(paid_hours, 0)), 0) AS pending_hrs,
+            SUM(GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0)) AS pending_hrs,
             COUNT(*) FILTER (WHERE result_simple = 'Follow up')                 AS followup_count,
             ROUND(
                 100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1
@@ -131,6 +131,7 @@ def top_followup_clients(
                 GREATEST(ROUND(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 1), 0) AS pending_hrs,
                 ROUND(payroll_hours - billed_hours, 1) AS payroll_vs_billed,
                 result_detailed,
+                care_type,
                 ROW_NUMBER() OVER (
                     PARTITION BY client_name_payroll
                     ORDER BY GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0) DESC
@@ -152,7 +153,8 @@ def top_followup_clients(
             paid_hours,
             pending_hrs,
             payroll_vs_billed,
-            result_detailed                         AS reason
+            result_detailed                         AS reason,
+            care_type
         FROM ranked
         WHERE rn = 1
         ORDER BY pending_hrs DESC
@@ -207,7 +209,8 @@ def weekly_recon_detail(
             result_detailed                            AS reason,
             is_copay_client,
             yash_comments,
-            connie_comments
+            connie_comments,
+            care_type
         FROM reconciliation
         {where}
         ORDER BY pending_hrs DESC, ABS(payroll_vs_billed) DESC
@@ -353,7 +356,7 @@ def rolling_trend(
             SUM(payroll_hours)  AS payroll_hrs,
             SUM(billed_hours)   AS billed_hrs,
             SUM(paid_hours)     AS paid_hrs,
-            GREATEST(SUM(COALESCE(payroll_hours, 0)) - SUM(COALESCE(paid_hours, 0)), 0) AS pending_hrs,
+            SUM(GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0)) AS pending_hrs,
             COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_count
         FROM reconciliation
         WHERE 1=1 {ins_filter} {care_filter} {date_filter}
@@ -373,14 +376,14 @@ def client_ledger(
     start_date: str | None = None,
     end_date: str | None = None,
     sort_asc: bool = True,
+    care_type: str | None = None,
 ):
-
     """All remittance records for a given client (remittance name match).
 
     Aggregates multiple remittance rows per DOS into a single net row per date of service,
     showing the current state. Multiple claim lifecycle entries (original, reversal,
     re-bill, different payment batches) for the same DOS are consolidated so the user
-    sees one row per DOS rather than multiple duplicate rows.
+    sees one row per DOS rather than multiple duplicate rows. Keeps care types separate.
     """
     import re
     stripped_name = re.sub(r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$", "", client_name, flags=re.IGNORECASE).strip()
@@ -397,7 +400,33 @@ def client_ledger(
     date_filter = (" AND " + " AND ".join(date_clauses)) if date_clauses else ""
 
     sql = f"""
-        WITH rem_daily AS (
+        WITH rem_classified AS (
+            SELECT 
+                client_name_combined,
+                first_dos,
+                last_dos,
+                payment_date,
+                tcn,
+                transaction_type,
+                billed_hours,
+                paid_hours,
+                charge_amount,
+                payment_amount,
+                insurance,
+                match_status,
+                CASE 
+                    -- rate-based classification
+                    WHEN (billed_hours > 0 AND ABS(charge_amount / billed_hours) >= 30.0) THEN 'Skilled'
+                    WHEN (paid_hours > 0 AND ABS(payment_amount / paid_hours) >= 30.0) THEN 'Skilled'
+                    -- insurance-based fallback
+                    WHEN (insurance LIKE '%PDN%' OR insurance LIKE '%pdn%') THEN 'Skilled'
+                    ELSE 'Unskilled'
+                END as care_type
+            FROM remittance
+            WHERE UPPER(client_name_combined) = UPPER(?)
+              AND is_latest = True
+        ),
+        rem_daily AS (
             -- Group by client, first_dos, and payment_date to get the sum for each payment date segment.
             SELECT
                 client_name_combined,
@@ -409,9 +438,8 @@ def client_ledger(
                 SUM(payment_amount) AS payment_amount,
                 MAX(insurance)      AS insurance,
                 MAX(match_status)   AS match_status
-            FROM remittance
-            WHERE UPPER(client_name_combined) IN (UPPER(?), UPPER(?))
-              AND is_latest = True
+            FROM rem_classified
+            WHERE (care_type = ? OR ? IS NULL)
             GROUP BY client_name_combined, first_dos, payment_date
         ),
         rem_agg AS (
@@ -454,24 +482,28 @@ def client_ledger(
             r.result_detailed AS week_result_detailed,
             r.result_simple   AS week_result_simple
         FROM rem_agg ra
-        FULL OUTER JOIN reconciliation r ON (
+        FULL OUTER JOIN (
+            SELECT * FROM reconciliation
+            WHERE (care_type = ? OR ? IS NULL)
+        ) r ON (
             UPPER(ra.client_name_combined) = UPPER(COALESCE(r.client_name_remittance, r.client_name_payroll))
             AND ra.first_dos BETWEEN r.week_start_date AND r.week_end_date
         )
         WHERE (
-            UPPER(ra.client_name_combined) IN (UPPER(?), UPPER(?))
-            OR UPPER(r.client_name_payroll) IN (UPPER(?), UPPER(?))
-            OR UPPER(r.client_name_remittance) IN (UPPER(?), UPPER(?))
+            UPPER(ra.client_name_combined) = UPPER(?)
+            OR UPPER(regexp_replace(r.client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\))$', '')) = UPPER(?)
+            OR UPPER(r.client_name_remittance) = UPPER(?)
         )
         {date_filter}
         {'ORDER BY COALESCE(ra.first_dos, r.week_start_date) ASC, ra.payment_date ASC' if sort_asc else 'ORDER BY ra.payment_date DESC, COALESCE(ra.first_dos, r.week_start_date) DESC'}
     """
-    # params order: CTE name filter (2) + outer WHERE name filter (6) + date params (0-2)
     all_params = [
-        client_name, stripped_name,
-        client_name, stripped_name,
-        client_name, stripped_name,
-        client_name, stripped_name
+        stripped_name,
+        care_type, care_type,
+        care_type, care_type,
+        stripped_name,
+        stripped_name,
+        stripped_name
     ] + date_params
     return conn.execute(sql, all_params).df()
 
@@ -481,6 +513,7 @@ def client_weekly_recon_with_dos(
     client_name: str,
     start_date: str | None = None,
     end_date: str | None = None,
+    care_type: str | None = None,
 ) -> pd.DataFrame:
     """
     Get weekly reconciliation rows for a client, joined with the minimum first_dos 
@@ -491,12 +524,15 @@ def client_weekly_recon_with_dos(
 
     clauses = [
         """(
-            UPPER(r.client_name_payroll) IN (UPPER(?), UPPER(?))
-            OR UPPER(r.client_name_remittance) IN (UPPER(?), UPPER(?))
+            UPPER(regexp_replace(r.client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\))$', '')) = UPPER(?)
+            OR UPPER(r.client_name_remittance) = UPPER(?)
         )"""
     ]
-    params = [client_name, stripped_name, client_name, stripped_name]
+    params = [stripped_name, stripped_name]
 
+    if care_type:
+        clauses.append("r.care_type = ?")
+        params.append(care_type)
     if start_date:
         clauses.append("r.week_start_date >= ?")
         params.append(start_date)
@@ -528,28 +564,31 @@ def client_weekly_recon_with_dos(
     return conn.execute(sql, params).df()
 
 
-def client_summary(conn: duckdb.DuckDBPyConnection, client_name: str):
+def client_summary(conn: duckdb.DuckDBPyConnection, client_name: str, care_type: str | None = None):
     """Aggregated YTD stats for a client (across all weeks in reconciliation)."""
     import re
     stripped_name = re.sub(r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$", "", client_name, flags=re.IGNORECASE).strip()
 
-    sql = """
+    care_clause = f"AND care_type = '{care_type}'" if care_type else ""
+
+    sql = f"""
         SELECT
             COALESCE(MIN(client_name_payroll), MIN(client_name_remittance)) AS client_name_payroll,
             insurance,
             SUM(billed_hours)   AS ytd_billed_hrs,
             SUM(paid_hours)     AS ytd_paid_hrs,
             SUM(payroll_hours)  AS ytd_payroll_hrs,
-            GREATEST(SUM(COALESCE(payroll_hours, 0)) - SUM(COALESCE(paid_hours, 0)), 0) AS ytd_pending_hrs,
+            SUM(GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0)) AS ytd_pending_hrs,
             COUNT(*)            AS total_weeks,
             COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_weeks,
             ROUND(100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1) AS collection_rate_pct
         FROM reconciliation
-        WHERE UPPER(client_name_payroll) IN (UPPER(?), UPPER(?))
-           OR UPPER(client_name_remittance) IN (UPPER(?), UPPER(?))
+        WHERE (UPPER(regexp_replace(client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\))$', '')) = UPPER(?)
+           OR UPPER(client_name_remittance) = UPPER(?))
+           {care_clause}
         GROUP BY insurance
     """
-    return conn.execute(sql, [client_name, stripped_name, client_name, stripped_name]).df()
+    return conn.execute(sql, [stripped_name, stripped_name]).df()
 
 
 

@@ -87,7 +87,7 @@ class TestPipeline:
         when payroll suffix implied Skilled but insurance billed at unskilled rates.
         """
         # Find clients with MATCHED status but 0 billed hours AND 0 paid hours
-        # who also have remittance records for that week — that's the broken scenario
+        # who also have remittance records for that week and care type — that's the broken scenario
         rows = conn.execute("""
             SELECT r.client_name_payroll, r.week_start_date, r.billed_hours, r.paid_hours,
                    r.match_status, r.result_detailed
@@ -97,16 +97,49 @@ class TestPipeline:
               AND r.billed_hours = 0
               AND r.paid_hours = 0
               AND r.result_detailed = 'Not Billed'
-              -- Only flag if remittance record exists for this client in the same week
+              -- Only flag if remittance record exists for this client in the same week and care type
               AND EXISTS (
                   SELECT 1 FROM remittance rem
                   WHERE rem.client_name_combined = r.client_name_remittance
                     AND rem.is_latest = true
                     AND rem.first_dos <= r.week_end_date
                     AND rem.last_dos >= r.week_start_date
+                    AND (
+                        CASE 
+                            WHEN (rem.billed_hours > 0 AND ABS(rem.charge_amount / rem.billed_hours) >= 30.0) THEN 'Skilled'
+                            WHEN (rem.paid_hours > 0 AND ABS(rem.payment_amount / rem.paid_hours) >= 30.0) THEN 'Skilled'
+                            WHEN (rem.insurance LIKE '%PDN%' OR rem.insurance LIKE '%pdn%') THEN 'Skilled'
+                            ELSE 'Unskilled'
+                        END
+                    ) = r.care_type
               )
         """).fetchall()
         assert len(rows) == 0, (
             f"Found {len(rows)} MATCHED clients showing Not Billed despite having remittance records "
             f"(care-type mismatch fallback may have regressed): {[r[0] for r in rows[:5]]}"
         )
+
+    def test_dual_care_type_separation(self, conn):
+        """Verify that a client with both care types (e.g. Kayla Drewry) gets separate records."""
+        # Kayla Drewry has separate records DREWRY, KAYLA LPN and DREWRY, KAYLA PCA in the same week
+        # Let's count them by week
+        rows = conn.execute("""
+            SELECT week_start_date, COUNT(*) 
+            FROM reconciliation
+            WHERE client_name_payroll LIKE '%DREWRY, KAYLA%'
+            GROUP BY week_start_date
+            HAVING COUNT(*) > 1
+        """).fetchall()
+        
+        assert len(rows) > 0, "Kayla Drewry should have weeks with both Skilled and Unskilled entries"
+        for week, count in rows:
+            # For each such week, we should see one Skilled and one Unskilled entry
+            details = conn.execute("""
+                SELECT care_type, payroll_hours
+                FROM reconciliation
+                WHERE client_name_payroll LIKE '%DREWRY, KAYLA%'
+                  AND week_start_date = ?
+            """, [week]).fetchall()
+            assert len(details) == 2
+            care_types = {d[0] for d in details}
+            assert care_types == {"Skilled", "Unskilled"}

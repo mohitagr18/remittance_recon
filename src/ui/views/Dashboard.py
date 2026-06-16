@@ -32,6 +32,15 @@ importlib.reload(queries)
 conn = _get_conn()
 inject_css()
 
+# Suffix cleaning regex pattern
+import re
+_ROLE_SUFFIX = re.compile(
+    r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$",
+    re.IGNORECASE,
+)
+def strip_suffix(name: str) -> str:
+    return _ROLE_SUFFIX.sub("", name).strip()
+
 # Clear dashboard table selections if redirect flag is set
 if st.session_state.get("clear_dashboard_selections"):
     for k in ["top_fu_table_None", "top_fu_table_Skilled", "top_fu_table_Unskilled"]:
@@ -299,8 +308,14 @@ def render_dashboard(care_type_filter: str | None):
 
         selected_rows = selection.selection.rows if selection.selection else []
         if selected_rows:
-            selected_client = display.iloc[selected_rows[0]]["client"]
-            st.session_state.selected_client_ledger = selected_client
+            row_data = display.iloc[selected_rows[0]]
+            selected_client = row_data["client"]
+            st.session_state.selected_client_ledger = strip_suffix(selected_client)
+
+            # Set care type from row's care_type if present, otherwise fallback to filter
+            row_care_type = row_data.get("care_type")
+            st.session_state.selected_care_type = row_care_type or care_type_filter
+
             st.session_state.clear_dashboard_selections = True
             st.switch_page("views/1_Client_Ledger.py")
 

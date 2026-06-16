@@ -746,10 +746,13 @@ def rebuild_reconciliation(
             client_key = _normalize_client_key(r_name)
             remit_lookup[(client_key, care_type)] = data
 
+        consumed_remit = set()
+        matched_results = {}  # key: (payroll_name, care_type) -> (billed_hrs, paid_hrs, remit_insurance, match_status, remit_name)
+        paycheck_date = None
+
         if has_payroll:
-            # Standard Join Mode: Loop over payroll clients grouped by (client_name_raw, care_type)
+            # Standard Join Mode: Group payroll clients by (client_name_raw, care_type)
             grouped_pay: dict[tuple[str, str], dict] = {}
-            paycheck_date = None
             for r in week_payroll:
                 paycheck_date = r[2]
                 c_name = r[3]
@@ -765,46 +768,61 @@ def rebuild_reconciliation(
                     }
                 grouped_pay[key]["total_hours"] += float(r[5] or 0.0)
 
+            # Pass 1: Direct Match (same care type)
             for (payroll_name, care_type), pay_data in grouped_pay.items():
-                insurance = pay_data["insurance"]
-                payroll_hrs = pay_data["total_hours"]
-
-                # Resolve client name
                 remit_name, match_status = resolve_client_name(payroll_name, name_mapping)
-                copay = is_copay_client(payroll_name, copay_set)
-
-                billed_hrs = 0.0
-                paid_hrs = 0.0
-                remit_insurance = None
-
+                
                 if match_status == "NOT_AVAILABLE":
-                    pass
+                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, match_status, None)
                 elif remit_name:
                     client_key = _normalize_client_key(remit_name)
-                    if (client_key, care_type) in remit_lookup:
-                        rem_data = remit_lookup[(client_key, care_type)]
+                    rem_key = (client_key, care_type)
+                    if rem_key in remit_lookup:
+                        rem_data = remit_lookup[rem_key]
                         billed_hrs = rem_data["billed_hours"]
                         paid_hrs = rem_data["paid_hours"]
                         remit_insurance = rem_data["insurance"]
-                    else:
-                        # Fallback: try any care type for this client.
-                        # This handles cases where the payroll suffix (e.g. LPN) implies
-                        # Skilled but the insurance bills at unskilled rates — a real-world
-                        # mismatch that would otherwise silently show as Not Billed.
-                        fallback = next(
-                            (remit_lookup[(k, ct)] for (k, ct) in remit_lookup if k == client_key),
-                            None
-                        )
-                        if fallback:
-                            billed_hrs = fallback["billed_hours"]
-                            paid_hrs = fallback["paid_hours"]
-                            remit_insurance = fallback["insurance"]
-                            log.debug(
-                                "Care type fallback used for %s: payroll=%s, remit care_type differs",
-                                payroll_name, care_type
-                            )
+                        consumed_remit.add(rem_key)
+                        matched_results[(payroll_name, care_type)] = (billed_hrs, paid_hrs, remit_insurance, match_status, remit_name)
                 else:
                     unmatched_clients.add(payroll_name)
+                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, "UNMATCHED", None)
+
+            # Pass 2: Fallback Match (differing care type) for unmatched entries
+            for (payroll_name, care_type), pay_data in grouped_pay.items():
+                if (payroll_name, care_type) in matched_results:
+                    continue
+                
+                remit_name, match_status = resolve_client_name(payroll_name, name_mapping)
+                if match_status != "NOT_AVAILABLE" and remit_name:
+                    client_key = _normalize_client_key(remit_name)
+                    # Find any unconsumed care type for this client
+                    fallback_key = next(
+                        (rk for rk in remit_lookup if rk[0] == client_key and rk not in consumed_remit),
+                        None
+                    )
+                    if fallback_key:
+                        rem_data = remit_lookup[fallback_key]
+                        billed_hrs = rem_data["billed_hours"]
+                        paid_hrs = rem_data["paid_hours"]
+                        remit_insurance = rem_data["insurance"]
+                        consumed_remit.add(fallback_key)
+                        matched_results[(payroll_name, care_type)] = (billed_hrs, paid_hrs, remit_insurance, match_status, remit_name)
+                        log.debug(
+                            "Care type fallback used for %s: payroll=%s, remit care_type differs",
+                            payroll_name, care_type
+                        )
+
+                # If still not matched, default to 0.0
+                if (payroll_name, care_type) not in matched_results:
+                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, match_status, remit_name)
+
+            # Append matched payroll reconciliation rows
+            for (payroll_name, care_type), pay_data in grouped_pay.items():
+                insurance = pay_data["insurance"]
+                payroll_hrs = pay_data["total_hours"]
+                billed_hrs, paid_hrs, remit_insurance, match_status, remit_name = matched_results[(payroll_name, care_type)]
+                copay = is_copay_client(payroll_name, copay_set)
 
                 final_insurance = insurance or remit_insurance
                 pvb, bvp, pvp = compute_deltas(payroll_hrs, billed_hrs, paid_hrs)
@@ -812,7 +830,6 @@ def rebuild_reconciliation(
                     payroll_hrs, billed_hrs, paid_hrs, is_copay=copay
                 )
 
-                # Fetch preserved comments
                 prev = existing_overrides.get((week_start_str, payroll_name), {})
 
                 reconciliation_rows.append({
@@ -837,68 +854,69 @@ def rebuild_reconciliation(
                     "connie_comments": prev.get("connie_comments"),
                     "care_type": care_type,
                 })
-        else:
-            # Remittance-Only Mode (No Payroll File)
-            for (remit_name, care_type), rem_data in aggregated_remit.items():
-                billed_hrs = rem_data["billed_hours"]
-                paid_hrs = rem_data["paid_hours"]
-                remit_insurance = rem_data["insurance"]
 
-                # Reverse resolve client name to payroll if match exists, care-type aware
-                payroll_name = reverse_mapping.get((remit_name.upper(), care_type))
-                if not payroll_name:
-                    fallback_keys = [k for (r_nm, ct), k in reverse_mapping.items() if r_nm == remit_name.upper()]
-                    payroll_name = fallback_keys[0] if fallback_keys else remit_name
-                copay = is_copay_client(payroll_name, copay_set)
+        # Step 2: Add unconsumed/leftover remittance records (either remittance-only weeks or unconsumed claims in payroll weeks)
+        for (r_name, care_type), rem_data in aggregated_remit.items():
+            client_key = _normalize_client_key(r_name)
+            rem_key = (client_key, care_type)
+            if rem_key in consumed_remit:
+                continue
 
-                # Build row (payroll hours is None, status is 'No Payroll Data')
-                # Deltas: payroll_vs_billed = None, billing_vs_paid = billed - paid
-                pvb = None
-                bvp = round(billed_hrs - paid_hrs, 4)
-                pvp = None
-                
-                prev = existing_overrides.get((week_start_str, payroll_name), {})
+            billed_hrs = rem_data["billed_hours"]
+            paid_hrs = rem_data["paid_hours"]
+            remit_insurance = rem_data["insurance"]
 
-                # Reconcile billed vs paid for remittance-only weeks
-                bvp_abs = abs(bvp)
-                if billed_hrs < 0 or paid_hrs < 0:
-                    res_simple = "Follow up"
-                    res_detailed = "Payer Reversal"
-                elif bvp_abs <= TOLERANCE:
-                    res_simple = "Good"
-                    res_detailed = None
+            # Reverse resolve client name to payroll if match exists, care-type aware
+            payroll_name = reverse_mapping.get((r_name.upper(), care_type))
+            if not payroll_name:
+                fallback_keys = [k for (r_nm, ct), k in reverse_mapping.items() if r_nm == r_name.upper()]
+                payroll_name = fallback_keys[0] if fallback_keys else r_name
+            copay = is_copay_client(payroll_name, copay_set)
+
+            pvb = None
+            bvp = round(billed_hrs - paid_hrs, 4)
+            pvp = None
+
+            prev = existing_overrides.get((week_start_str, payroll_name), {})
+
+            bvp_abs = abs(bvp)
+            if billed_hrs < 0 or paid_hrs < 0:
+                res_simple = "Follow up"
+                res_detailed = "Payer Reversal"
+            elif bvp_abs <= TOLERANCE:
+                res_simple = "Good"
+                res_detailed = None
+            else:
+                res_simple = "Follow up"
+                if paid_hrs < 1:
+                    res_detailed = "Not Paid"
+                elif paid_hrs < billed_hrs:
+                    res_detailed = "Paid Less"
                 else:
-                    res_simple = "Follow up"
-                    if paid_hrs < 1:
-                        res_detailed = "Not Paid"
-                    elif paid_hrs < billed_hrs:
-                        res_detailed = "Paid Less"
-                    else:
-                        res_detailed = "Paid Excess"
+                    res_detailed = "Paid Excess"
 
-
-                reconciliation_rows.append({
-                    "week_start_date": week_start,
-                    "week_end_date": week_end,
-                    "paycheck_date": None,
-                    "insurance": remit_insurance,
-                    "client_name_payroll": payroll_name,
-                    "client_name_remittance": remit_name,
-                    "payroll_hours": None,
-                    "billed_hours": billed_hrs,
-                    "paid_hours": paid_hrs,
-                    "payroll_vs_billed": pvb,
-                    "billing_vs_paid": bvp,
-                    "payroll_vs_paid": pvp,
-                    "result_simple": res_simple,
-                    "result_detailed": res_detailed,
-                    "is_copay_client": copay,
-                    "match_status": "MATCHED" if payroll_name != remit_name else "UNMATCHED",
-                    "analyst_override": prev.get("analyst_override"),
-                    "yash_comments": prev.get("yash_comments"),
-                    "connie_comments": prev.get("connie_comments"),
-                    "care_type": care_type,
-                })
+            reconciliation_rows.append({
+                "week_start_date": week_start,
+                "week_end_date": week_end,
+                "paycheck_date": None,
+                "insurance": remit_insurance,
+                "client_name_payroll": payroll_name,
+                "client_name_remittance": r_name,
+                "payroll_hours": None,
+                "billed_hours": billed_hrs,
+                "paid_hours": paid_hrs,
+                "payroll_vs_billed": pvb,
+                "billing_vs_paid": bvp,
+                "payroll_vs_paid": pvp,
+                "result_simple": res_simple,
+                "result_detailed": res_detailed,
+                "is_copay_client": copay,
+                "match_status": "MATCHED" if payroll_name != r_name else "UNMATCHED",
+                "analyst_override": prev.get("analyst_override"),
+                "yash_comments": prev.get("yash_comments"),
+                "connie_comments": prev.get("connie_comments"),
+                "care_type": care_type,
+            })
 
     # 6. Bulk Insert to reconciliation table
     _write_reconciliation_rows(conn, reconciliation_rows)

@@ -41,8 +41,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Suffix cleaning regex pattern
+import re
+_ROLE_SUFFIX = re.compile(
+    r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$",
+    re.IGNORECASE,
+)
+def strip_suffix(name: str) -> str:
+    return _ROLE_SUFFIX.sub("", name).strip()
+
 # ── Top-level filters ─────────────────────────────────────────────────────────
-client_options = ["All Clients"] + queries.all_clients(conn)
+client_options = ["All Clients"] + sorted(list(set(strip_suffix(name) for name in queries.all_clients(conn))))
 
 # Get distinct reason options from the reconciliation table
 reason_options = sorted([
@@ -86,7 +95,7 @@ def render_weekly_recon(care_type: str | None = None):
 
     # Apply Client Name filter
     if selected_client != "All Clients":
-        df = df[df["client"] == selected_client]
+        df = df[df["client"].apply(strip_suffix) == strip_suffix(selected_client)]
 
     # Apply Reason filter
     if selected_reasons:
@@ -96,11 +105,10 @@ def render_weekly_recon(care_type: str | None = None):
         st.info("No reconciliation data for the selected filters. Run the ETL pipeline or adjust filters.", icon="ℹ️")
         return
 
-    # ── Summary bar ─────────────────────────────────────────────────────────────
     total_payroll = df["payroll_hours"].sum()
     total_billed  = df["billed_hours"].sum()
     total_paid    = df["paid_hours"].sum()
-    total_pending = max(total_payroll - total_paid, 0.0)
+    total_pending = df["pending_hrs"].sum()
     n_followup    = (df["status"] == "Follow up").sum()
     n_good        = (df["status"] == "Good").sum()
 
@@ -253,15 +261,15 @@ def render_weekly_recon(care_type: str | None = None):
         
         # Try with remittance name matching
         rem_name = client_name
-        summary_df = queries.client_summary(conn, client_name)
+        summary_df = queries.client_summary(conn, client_name, care_type=care_type)
         if not summary_df.empty and "client_name_remittance" in summary_df.columns:
             alt = summary_df.iloc[0].get("client_name_remittance")
             if alt:
                 rem_name = alt
 
-        rem_df = queries.client_ledger(conn, rem_name, start_date=w_start, end_date=w_end)
+        rem_df = queries.client_ledger(conn, rem_name, start_date=w_start, end_date=w_end, care_type=care_type)
         if rem_df.empty:
-            rem_df = queries.client_ledger(conn, client_name, start_date=w_start, end_date=w_end)
+            rem_df = queries.client_ledger(conn, client_name, start_date=w_start, end_date=w_end, care_type=care_type)
 
         if not rem_df.empty:
             # Filter out rows that represent reconciliation weeks without remittance data (unbilled)
