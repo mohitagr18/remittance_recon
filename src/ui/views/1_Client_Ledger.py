@@ -97,12 +97,8 @@ if st.session_state.selected_client_ledger:
         st.session_state.unskilled_selector = client
         st.session_state.skilled_selector = None
 
-# ── Sidebar filters ─────────────────────────────────────────────────────────
-st.sidebar.markdown("**Filters**")
-show_archived = st.sidebar.checkbox("Show Archived (Older than 1 year and 1 week)", value=False, key="cl_show_archived")
-
 # ── Client selectors ─────────────────────────────────────────────────────────
-col_s, col_u = st.columns(2)
+col_s, col_u, col_a = st.columns([2, 2, 1])
 
 with col_s:
     st.selectbox(
@@ -129,6 +125,10 @@ with col_u:
         key="unskilled_selector",
         on_change=on_unskilled_change,
     )
+
+with col_a:
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    show_archived = st.checkbox("Show Archived", value=False, key="cl_show_archived")
 
 selected = st.session_state.selected_client_ledger
 
@@ -195,6 +195,10 @@ if not summary_df.empty:
 # ── Weekly billed vs paid chart & pending hours chart ────────────────────────
 client_recon = queries.client_weekly_recon_with_dos(conn, selected)
 
+if "client_chart_rev" not in st.session_state:
+    st.session_state["client_chart_rev"] = 0
+active_client_chart_key = f"client_chart_{st.session_state['client_chart_rev']}"
+
 if not client_recon.empty:
     st.markdown(
         "<div class='section-header'><h3>📊 Weekly Reconciliation Trend</h3></div>",
@@ -222,17 +226,43 @@ if not client_recon.empty:
                 """,
                 unsafe_allow_html=True
             )
-        st.plotly_chart(
+        selected_points = st.plotly_chart(
             client_billed_paid_chart(client_recon),
             use_container_width=True,
             config={"displayModeBar": False},
+            on_select="rerun",
+            key=active_client_chart_key,
         )
+
+# Parse chart selection
+selected_week = None
+if active_client_chart_key in st.session_state and st.session_state[active_client_chart_key]:
+    sel = st.session_state[active_client_chart_key]
+    if "selection" in sel and "points" in sel["selection"] and sel["selection"]["points"]:
+        pt = sel["selection"]["points"][0]
+        selected_week_str = pt.get("x")
+        if selected_week_str:
+            try:
+                selected_week = pd.to_datetime(selected_week_str).date()
+            except Exception:
+                pass
 
 # ── Full remittance ledger ──────────────────────────────────────────────────
 st.markdown(
     "<div class='section-header'><h3>🧾 Payment Ledger</h3></div>",
     unsafe_allow_html=True,
 )
+
+if selected_week:
+    import datetime
+    week_end_date = selected_week + datetime.timedelta(days=6)
+    st.info(
+        f"📊 Filtering Payment Ledger by selected week: **{selected_week.strftime('%b %d, %Y')} – {week_end_date.strftime('%b %d, %Y')}**",
+        icon="🔍"
+    )
+    if st.button("Reset Chart Selection", key="btn_reset_client_chart"):
+        st.session_state["client_chart_rev"] += 1
+        st.rerun()
 
 # Try with remittance name if we have it
 rem_name = selected
@@ -244,6 +274,15 @@ if not summary_df.empty and "client_name_remittance" in summary_df.columns:
 ledger_df = queries.client_ledger(conn, rem_name, sort_asc=True)
 if ledger_df.empty:
     ledger_df = queries.client_ledger(conn, selected, sort_asc=True)
+
+if selected_week:
+    import datetime
+    week_end_date = selected_week + datetime.timedelta(days=6)
+    ledger_df["first_dos_date"] = pd.to_datetime(ledger_df["first_dos"]).dt.date
+    ledger_df = ledger_df[
+        (ledger_df["first_dos_date"] >= selected_week) & 
+        (ledger_df["first_dos_date"] <= week_end_date)
+    ]
 
 # Apply Archive filter to Payment Ledger
 if not show_archived:
@@ -432,7 +471,7 @@ else:
         ledger_df[display_cols],
         use_container_width=True,
         hide_index=True,
-        height=(len(ledger_df) + 1) * 35 + 3,
+        height=min((len(ledger_df) + 1) * 35 + 3, 450),
         column_config={
             "first_dos":          st.column_config.DateColumn("First DOS"),
             "last_dos":           st.column_config.DateColumn("Last DOS"),

@@ -41,15 +41,34 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Sidebar filters ─────────────────────────────────────────────────────────
-st.sidebar.markdown("**Filters**")
+# ── Top-level filters ─────────────────────────────────────────────────────────
 client_options = ["All Clients"] + queries.all_clients(conn)
-selected_client = st.sidebar.selectbox("🔍 Client Name", options=client_options, index=0, key="wr_client_name")
-show_archived_val = st.session_state.get("wr_show_archived", False)
-week    = week_filter("wr_week", show_archived=show_archived_val)
-ins     = insurance_filter("wr_ins")
-fu_only = st.sidebar.toggle("Follow-Up Only", value=False, key="wr_fu_only")
-show_archived = st.sidebar.checkbox("Show Archived (Older than 1 year and 1 week)", value=False, key="wr_show_archived")
+
+# Get distinct reason options from the reconciliation table
+reason_options = sorted([
+    r[0] for r in conn.execute(
+        "SELECT DISTINCT result_detailed FROM reconciliation WHERE result_detailed IS NOT NULL AND result_detailed != ''"
+    ).fetchall()
+])
+
+col_c, col_w, col_i = st.columns(3)
+with col_c:
+    selected_client = st.selectbox("🔍 Client Name", options=client_options, index=0, key="wr_client_name")
+with col_w:
+    show_archived_val = st.session_state.get("wr_show_archived", False)
+    week = week_filter("wr_week", show_archived=show_archived_val, in_sidebar=False)
+with col_i:
+    ins = insurance_filter("wr_ins", in_sidebar=False)
+
+col_r, col_f, col_a = st.columns([2, 1, 1])
+with col_r:
+    selected_reasons = st.multiselect("📝 Reason", options=reason_options, key="wr_reasons")
+with col_f:
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    fu_only = st.toggle("Follow-Up Only", value=False, key="wr_fu_only")
+with col_a:
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    show_archived = st.checkbox("Show Archived", value=False, key="wr_show_archived")
 
 # ── Load data ───────────────────────────────────────────────────────────────
 df = queries.weekly_recon_detail(
@@ -68,6 +87,10 @@ if not show_archived:
 # Apply Client Name filter
 if selected_client != "All Clients":
     df = df[df["client"] == selected_client]
+
+# Apply Reason filter
+if selected_reasons:
+    df = df[df["reason"].isin(selected_reasons)]
 
 if df.empty:
     st.info("No reconciliation data for the selected filters. Run the ETL pipeline or adjust filters.", icon="ℹ️")
@@ -162,6 +185,7 @@ show_cols = [c for c in show_cols if c in display.columns]
 # ── Status colour indicator column ─────────────────────────────────────────
 STATUS_ICON = {"Good": "✅", "Follow up": "⚠️", "No Payroll Hours": "⬜", "No Payroll Data": "⬜"}
 display["status"] = display["status"].map(lambda s: f"{STATUS_ICON.get(s, '')} {s}" if isinstance(s, str) else s)
+display["is_copay_client"] = display["is_copay_client"].map(lambda x: "Yes" if x else "No")
 
 # ── Render table ────────────────────────────────────────────────────────────
 selection = st.dataframe(
@@ -179,7 +203,7 @@ selection = st.dataframe(
         "payroll_vs_billed": st.column_config.NumberColumn("PvB Δ",      format="%.1f"),
         "status":            st.column_config.TextColumn("Status",       width="small"),
         "reason":            st.column_config.TextColumn("Reason",       width="medium"),
-        "is_copay_client":   st.column_config.CheckboxColumn("Copay",    width="small"),
+        "is_copay_client":   st.column_config.TextColumn("Copay",    width="small"),
     },
     on_select="rerun",
     selection_mode="single-row",
@@ -285,7 +309,7 @@ if selected_rows:
             rem_df[display_cols],
             use_container_width=True,
             hide_index=True,
-            height=(len(rem_df) + 1) * 35 + 3,
+            height=min((len(rem_df) + 1) * 35 + 3, 450),
             column_config={
                 "first_dos":         st.column_config.DateColumn("First DOS"),
                 "last_dos":          st.column_config.DateColumn("Last DOS"),

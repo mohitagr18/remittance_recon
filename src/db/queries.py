@@ -397,32 +397,45 @@ def client_ledger(
     date_filter = (" AND " + " AND ".join(date_clauses)) if date_clauses else ""
 
     sql = f"""
-        WITH rem_agg AS (
-            -- Aggregate all remittance rows per DOS (client + first_dos), summing hours/amounts.
-            -- Only uses is_latest=True rows to avoid stale duplicates.
-            -- TCN is selected via scalar subquery: prefers non-reversal row with latest payment_date.
+        WITH rem_daily AS (
+            -- Group by client, first_dos, and payment_date to get the sum for each payment date segment.
             SELECT
-                rem.client_name_combined,
-                rem.first_dos,
-                SUM(rem.billed_hours)    AS billed_hours,
-                SUM(rem.paid_hours)      AS paid_hours,
-                SUM(rem.charge_amount)   AS charge_amount,
-                SUM(rem.payment_amount)  AS payment_amount,
-                MAX(rem.payment_date)    AS payment_date,
-                MAX(rem.insurance)       AS insurance,
-                MAX(rem.match_status)    AS match_status,
+                client_name_combined,
+                first_dos,
+                payment_date,
+                SUM(billed_hours)   AS billed_hours,
+                SUM(charge_amount)  AS charge_amount,
+                SUM(paid_hours)     AS paid_hours,
+                SUM(payment_amount) AS payment_amount,
+                MAX(insurance)      AS insurance,
+                MAX(match_status)   AS match_status
+            FROM remittance
+            WHERE UPPER(client_name_combined) IN (UPPER(?), UPPER(?))
+              AND is_latest = True
+            GROUP BY client_name_combined, first_dos, payment_date
+        ),
+        rem_agg AS (
+            -- Aggregate over payment dates: select max billed/charge and sum paid.
+            SELECT
+                rem_daily.client_name_combined,
+                rem_daily.first_dos,
+                GREATEST(MAX(rem_daily.billed_hours), 0.0)    AS billed_hours,
+                GREATEST(MAX(rem_daily.charge_amount), 0.0)   AS charge_amount,
+                SUM(rem_daily.paid_hours)                     AS paid_hours,
+                SUM(rem_daily.payment_amount)                 AS payment_amount,
+                MAX(rem_daily.payment_date)                   AS payment_date,
+                MAX(rem_daily.insurance)                      AS insurance,
+                MAX(rem_daily.match_status)                   AS match_status,
                 (SELECT rem2.tcn
                  FROM remittance rem2
-                 WHERE rem2.client_name_combined = rem.client_name_combined
-                   AND rem2.first_dos = rem.first_dos
+                 WHERE rem2.client_name_combined = rem_daily.client_name_combined
+                   AND rem2.first_dos = rem_daily.first_dos
                    AND rem2.is_latest = True
                    AND rem2.transaction_type NOT IN ('Denial/Reversal')
                  ORDER BY rem2.payment_date DESC NULLS LAST, rem2.tcn
                  LIMIT 1) AS tcn
-            FROM remittance rem
-            WHERE UPPER(rem.client_name_combined) IN (UPPER(?), UPPER(?))
-              AND rem.is_latest = True
-            GROUP BY rem.client_name_combined, rem.first_dos
+            FROM rem_daily
+            GROUP BY rem_daily.client_name_combined, rem_daily.first_dos
         )
         SELECT
             COALESCE(ra.first_dos, r.week_start_date) AS first_dos,

@@ -113,4 +113,74 @@ class TestQueries:
             assert "paid_amt" in df.columns
             assert "amt_delta" in df.columns
 
+    def test_client_ledger_reversal_aggregation(self, conn):
+        # Insert test records for a mock client to test reversal aggregation
+        client_name = "TEST_REVERSAL_CLIENT"
+        
+        # Clean up any residual test records first
+        conn.execute("DELETE FROM remittance WHERE client_name_combined = ?", [client_name])
+        conn.execute("DELETE FROM reconciliation WHERE client_name_remittance = ?", [client_name])
+        
+        try:
+            # Insert a remittance record (Original Payment)
+            conn.execute(
+                """
+                INSERT INTO remittance (
+                    id, batch, payment_date, transaction, match_status, claim_number, transaction_type,
+                    charge_amount, payment_amount, client_name_combined, first_dos, last_dos, tcn,
+                    billed_hours, paid_hours, insurance, is_latest
+                ) VALUES (
+                    nextval('seq_remittance'), 1, '2026-02-15', 'Original Payment', 'MATCHED', 'CLM001', 'Original',
+                    3050.00, 3050.00, ?, '2026-02-04', '2026-02-04', 'TCN001',
+                    152.5, 152.5, 'Test Insurance', true
+                )
+                """,
+                [client_name]
+            )
+            
+            # Insert a second remittance record representing a reversal on a later date
+            conn.execute(
+                """
+                INSERT INTO remittance (
+                    id, batch, payment_date, transaction, match_status, claim_number, transaction_type,
+                    charge_amount, payment_amount, client_name_combined, first_dos, last_dos, tcn,
+                    billed_hours, paid_hours, insurance, is_latest
+                ) VALUES (
+                    nextval('seq_remittance'), 1, '2026-02-20', 'Reversal', 'MATCHED', 'CLM001', 'Denial/Reversal',
+                    -3050.00, -3050.00, ?, '2026-02-04', '2026-02-04', 'TCN001-REV',
+                    -152.5, -152.5, 'Test Insurance', true
+                )
+                """,
+                [client_name]
+            )
+
+            # Insert reconciliation entry to complete the ledger join
+            conn.execute(
+                """
+                INSERT INTO reconciliation (
+                    id, week_start_date, week_end_date, client_name_remittance, client_name_payroll,
+                    payroll_hours, billed_hours, paid_hours
+                ) VALUES (
+                    nextval('seq_reconciliation'), '2026-02-01', '2026-02-07', ?, ?,
+                    0.0, 152.5, 0.0
+                )
+                """,
+                [client_name, client_name]
+            )
+
+            # Call client_ledger on the mock client
+            df = q.client_ledger(conn, client_name)
+            
+            assert len(df) == 1
+            # Billed hours should be the maximum (152.5) rather than 0.0
+            assert float(df.iloc[0]["billed_hours"]) == 152.5
+            # Paid hours should be summed to 0.0
+            assert float(df.iloc[0]["paid_hours"]) == 0.0
+            
+        finally:
+            # Clean up the test records
+            conn.execute("DELETE FROM remittance WHERE client_name_combined = ?", [client_name])
+            conn.execute("DELETE FROM reconciliation WHERE client_name_remittance = ?", [client_name])
+
+
 

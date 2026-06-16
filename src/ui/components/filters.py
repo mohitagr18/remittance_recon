@@ -18,14 +18,15 @@ def _get_conn():
     return st.session_state.db_conn
 
 
-def week_filter(key: str = "week_filter", show_archived: bool = True) -> str | None:
+def week_filter(key: str = "week_filter", show_archived: bool = True, in_sidebar: bool = True) -> str | None:
     """Week picker — returns selected week_start_date string or None (all weeks)."""
     import datetime
     import pandas as pd
     conn = _get_conn()
     weeks_df = queries.available_weeks(conn)
     if weeks_df.empty:
-        st.sidebar.info("No weeks loaded yet.")
+        widget = st.sidebar if in_sidebar else st
+        widget.info("No weeks loaded yet.")
         return None
 
     if not show_archived:
@@ -45,34 +46,37 @@ def week_filter(key: str = "week_filter", show_archived: bool = True) -> str | N
         options.append(label)
         label_to_date[label] = s_dt.strftime("%Y-%m-%d")
 
-    choice = st.sidebar.selectbox("📅 Week", options, key=key)
+    widget = st.sidebar if in_sidebar else st
+    choice = widget.selectbox("📅 Week", options, key=key)
     if choice == "All Weeks":
         return None
     return label_to_date.get(choice)
 
 
-def insurance_filter(key: str = "ins_filter", multi: bool = False) -> str | None | list[str]:
+def insurance_filter(key: str = "ins_filter", multi: bool = False, in_sidebar: bool = True) -> str | None | list[str]:
     """Insurance picker. multi=True returns a list, else a single string or None."""
     conn = _get_conn()
     insurances = queries.available_insurances(conn)
     if not insurances:
         return [] if multi else None
 
+    widget = st.sidebar if in_sidebar else st
     if multi:
-        selected = st.sidebar.multiselect("🏥 Insurance", insurances, key=key)
+        selected = widget.multiselect("🏥 Insurance", insurances, key=key)
         return selected if selected else []
     else:
         options = ["All"] + insurances
-        choice = st.sidebar.selectbox("🏥 Insurance", options, key=key)
+        choice = widget.selectbox("🏥 Insurance", options, key=key)
         return None if choice == "All" else choice
 
 
-def result_filter(key: str = "result_filter") -> str | None:
+def result_filter(key: str = "result_filter", in_sidebar: bool = True) -> str | None:
     """Follow-up reason filter."""
     conn = _get_conn()
     reasons = queries.available_result_details(conn)
     if not reasons:
         return None
     options = ["All Reasons"] + reasons
-    choice = st.sidebar.selectbox("⚠️ Reason", options, key=key)
+    widget = st.sidebar if in_sidebar else st
+    choice = widget.selectbox("⚠️ Reason", options, key=key)
     return None if choice == "All Reasons" else choice

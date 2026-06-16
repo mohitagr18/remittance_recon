@@ -38,29 +38,48 @@ if st.session_state.get("clear_dashboard_selections"):
             st.session_state[k] = {"selection": {"rows": [], "columns": []}}
     st.session_state.clear_dashboard_selections = False
 
+# ── Page header ────────────────────────────────────────────────────────────
+st.markdown(
+    """
+    <div style='margin-bottom:1.2rem;'>
+        <h1 style='margin:0;font-size:1.5rem;font-weight:700;color:#e8eaf0;'>
+            📊 Executive Dashboard
+        </h1>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Get max year in reconciliation data for default YTD
 max_date_res = conn.execute("SELECT max(week_start_date) FROM reconciliation").fetchone()
 max_year = 2026  # Fallback default
 if max_date_res and max_date_res[0]:
     max_year = pd.to_datetime(max_date_res[0]).year
 
-st.sidebar.markdown("**Filters**")
+# ── Top-level filters ─────────────────────────────────────────────────────────
+col_p, col_i, col_a = st.columns([2, 2, 1])
 
 # Date range selection
 import datetime
 
-date_preset = st.sidebar.selectbox(
-    "📅 Date Period",
-    ["Year to Date (YTD)", "Month to Date (MTD)", "Last 4 Weeks", "All Time", "Custom Range"],
-    index=3,
-    key="dash_date_preset"
-)
+with col_p:
+    date_preset = st.selectbox(
+        "📅 Date Period",
+        ["Year to Date (YTD)", "Month to Date (MTD)", "Last 4 Weeks", "All Time", "Custom Range"],
+        index=3,
+        key="dash_date_preset"
+    )
 
-show_archived = st.sidebar.checkbox(
-    "Show Archived (Older than 1 year and 1 week)",
-    value=False,
-    key="dash_show_archived"
-)
+with col_i:
+    insurance = insurance_filter("dash_ins", in_sidebar=False)
+
+with col_a:
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    show_archived = st.checkbox(
+        "Show Archived",
+        value=False,
+        key="dash_show_archived"
+    )
 
 start_date = None
 end_date = None
@@ -76,7 +95,7 @@ elif date_preset == "All Time":
     if not show_archived:
         start_date = (today - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
 elif date_preset == "Custom Range":
-    col_s, col_e = st.sidebar.columns(2)
+    col_s, col_e = st.columns(2)
     with col_s:
         start_val = st.date_input("Start Date", value=pd.to_datetime(f"{max_year}-01-01").date(), key="dash_start_date")
         start_date = str(start_val)
@@ -84,22 +103,53 @@ elif date_preset == "Custom Range":
         end_val = st.date_input("End Date", value=pd.to_datetime("today").date(), key="dash_end_date")
         end_date = str(end_val)
 
-insurance = insurance_filter("dash_ins")
-
-# ── Page header ────────────────────────────────────────────────────────────
-st.markdown(
-    """
-    <div style='margin-bottom:1.2rem;'>
-        <h1 style='margin:0;font-size:1.5rem;font-weight:700;color:#e8eaf0;'>
-            📊 Executive Dashboard
-        </h1>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
 # ── Render Dashboard Function ─────────────────────────────────────────────
 def render_dashboard(care_type_filter: str | None):
+    # Determine session keys
+    trend_key = f"trend_chart_{care_type_filter}"
+    reason_key = f"reason_chart_{care_type_filter}"
+    payer_key = f"payer_chart_{care_type_filter}"
+
+    for k in [trend_key, reason_key, payer_key]:
+        if f"{k}_rev" not in st.session_state:
+            st.session_state[f"{k}_rev"] = 0
+
+    active_trend_key = f"{trend_key}_{st.session_state[f'{trend_key}_rev']}"
+    active_reason_key = f"{reason_key}_{st.session_state[f'{reason_key}_rev']}"
+    active_payer_key = f"{payer_key}_{st.session_state[f'{payer_key}_rev']}"
+
+    # 1. Parse Payer selection first to rerun and update the global selectbox before loading other data
+    if active_payer_key in st.session_state and st.session_state[active_payer_key]:
+        sel = st.session_state[active_payer_key]
+        if "selection" in sel and "points" in sel["selection"] and sel["selection"]["points"]:
+            pt = sel["selection"]["points"][0]
+            clicked_payer = pt.get("y")
+            if clicked_payer:
+                st.session_state["dash_ins"] = clicked_payer
+                st.session_state[f"{payer_key}_rev"] += 1
+                st.rerun()
+
+    # 2. Parse Trend selection
+    selected_week = None
+    if active_trend_key in st.session_state and st.session_state[active_trend_key]:
+        sel = st.session_state[active_trend_key]
+        if "selection" in sel and "points" in sel["selection"] and sel["selection"]["points"]:
+            pt = sel["selection"]["points"][0]
+            selected_week_str = pt.get("x")
+            if selected_week_str:
+                try:
+                    selected_week = pd.to_datetime(selected_week_str).date()
+                except Exception:
+                    pass
+
+    # 3. Parse Reason selection
+    selected_reason = None
+    if active_reason_key in st.session_state and st.session_state[active_reason_key]:
+        sel = st.session_state[active_reason_key]
+        if "selection" in sel and "points" in sel["selection"] and sel["selection"]["points"]:
+            pt = sel["selection"]["points"][0]
+            selected_reason = pt.get("y")
+
     summary = queries.weekly_summary(
         conn, 
         insurance=insurance, 
@@ -131,7 +181,26 @@ def render_dashboard(care_type_filter: str | None):
         {"label": "Collection Rate", "value": f"{rate:.0f}%",        "sub": "", "color": "green" if rate >= 95 else "red"},
     ])
 
-    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+    # Render Active selections and Reset button if any chart filter is active
+    active_selections = []
+    if selected_week:
+        import datetime
+        we = selected_week + datetime.timedelta(days=6)
+        active_selections.append(f"📅 Week: {selected_week.strftime('%b %d')} – {we.strftime('%b %d, %Y')}")
+    if selected_reason:
+        active_selections.append(f"⚠️ Reason: {selected_reason}")
+
+    if active_selections:
+        st.info(
+            f"📊 Filtering dashboard by: **{', '.join(active_selections)}**",
+            icon="🔍"
+        )
+        if st.button("Reset Chart Filters", key=f"reset_btn_{care_type_filter}"):
+            st.session_state[f"{trend_key}_rev"] += 1
+            st.session_state[f"{reason_key}_rev"] += 1
+            st.rerun()
 
     # ── Row 1: Rolling trend + Follow-up donut ─────────────────────────────────
     col_left, col_right = st.columns([3, 2], gap="large")
@@ -149,7 +218,13 @@ def render_dashboard(care_type_filter: str | None):
             start_date=start_date,
             end_date=end_date
         )
-        st.plotly_chart(rolling_trend_chart(trend_df), width="stretch", config={"displayModeBar": False})
+        st.plotly_chart(
+            rolling_trend_chart(trend_df), 
+            use_container_width=True, 
+            config={"displayModeBar": False},
+            on_select="rerun",
+            key=active_trend_key
+        )
 
     with col_right:
         st.markdown(
@@ -163,7 +238,13 @@ def render_dashboard(care_type_filter: str | None):
             start_date=start_date,
             end_date=end_date
         )
-        st.plotly_chart(followup_bar_chart(reason_df), width="stretch", config={"displayModeBar": False})
+        st.plotly_chart(
+            followup_bar_chart(reason_df), 
+            use_container_width=True, 
+            config={"displayModeBar": False},
+            on_select="rerun",
+            key=active_reason_key
+        )
 
     # ── Row 2: Top Follow-Up Clients (deduplicated) ────────────────────────────
     st.markdown(
@@ -177,8 +258,13 @@ def render_dashboard(care_type_filter: str | None):
         limit=50, 
         care_type=care_type_filter,
         start_date=start_date,
-        end_date=end_date
+        end_date=end_date,
+        week_start=str(selected_week) if selected_week else None
     )
+
+    if selected_reason:
+        if not top_fu.empty:
+            top_fu = top_fu[top_fu["reason"] == selected_reason]
 
     if top_fu.empty:
         st.success("✅ No follow-ups for the selected filters!", icon="✅")
@@ -194,6 +280,7 @@ def render_dashboard(care_type_filter: str | None):
             display[show_cols],
             use_container_width=True,
             hide_index=True,
+            height=min(60 + len(display) * 35, 400),
             on_select="rerun",
             selection_mode="single-row",
             column_config={
@@ -220,6 +307,13 @@ def render_dashboard(care_type_filter: str | None):
     st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
     col_payments, col_denials = st.columns(2, gap="large")
 
+    temp_start_date = start_date
+    temp_end_date = end_date
+    if selected_week:
+        import datetime
+        temp_start_date = str(selected_week)
+        temp_end_date = str(selected_week + datetime.timedelta(days=6))
+
     with col_payments:
         st.markdown(
             "<div class='section-header'><h3>💰 Recent Payments</h3></div>",
@@ -227,8 +321,8 @@ def render_dashboard(care_type_filter: str | None):
         )
         pay_df = queries.recent_payments(
             conn,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=temp_start_date,
+            end_date=temp_end_date,
             insurance=insurance,
             care_type=care_type_filter,
             limit=10
@@ -236,7 +330,6 @@ def render_dashboard(care_type_filter: str | None):
         if pay_df.empty:
             st.info("No recent payments found.", icon="ℹ️")
         else:
-            # Arrange columns in order: Client Name, Payment Date, First DOS, Billed Hrs, Paid Hrs, Billed $, Paid $
             pay_display_cols = ["client", "payment_date", "first_dos", "billed_hrs", "paid_hrs", "billed_amt", "paid_amt"]
             pay_df = pay_df[pay_display_cols]
             st.dataframe(
@@ -261,8 +354,8 @@ def render_dashboard(care_type_filter: str | None):
         )
         den_df = queries.recent_denials(
             conn,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=temp_start_date,
+            end_date=temp_end_date,
             insurance=insurance,
             care_type=care_type_filter,
             limit=10
@@ -270,7 +363,6 @@ def render_dashboard(care_type_filter: str | None):
         if den_df.empty:
             st.success("✅ No recent denials or short-pays!", icon="✅")
         else:
-            # Arrange columns in order: Client Name, Denial Date, First DOS, Billed Hrs, Paid Hrs, Pending Hrs, Billed $, Paid $, $ Delta
             den_display_cols = ["client", "payment_date", "first_dos", "billed_hrs", "paid_hrs", "pending_hrs", "billed_amt", "paid_amt", "amt_delta"]
             den_df = den_df[den_display_cols]
             st.dataframe(
@@ -302,7 +394,13 @@ def render_dashboard(care_type_filter: str | None):
         start_date=start_date,
         end_date=end_date
     )
-    st.plotly_chart(payer_bar_chart(payer_df), width="stretch", config={"displayModeBar": False})
+    st.plotly_chart(
+        payer_bar_chart(payer_df), 
+        use_container_width=True, 
+        config={"displayModeBar": False},
+        on_select="rerun",
+        key=active_payer_key
+    )
 
 
 # ── Render tabs ────────────────────────────────────────────────────────────

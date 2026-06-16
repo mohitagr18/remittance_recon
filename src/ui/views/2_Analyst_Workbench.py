@@ -37,12 +37,17 @@ st.markdown(
 
 conn = _get_conn()
 
-# ── Sidebar filters ─────────────────────────────────────────────────────────
-st.sidebar.markdown("**Filters**")
-week    = week_filter("wb_week")
-ins     = insurance_filter("wb_ins")
-reason  = result_filter("wb_reason")
-fu_only = st.sidebar.toggle("Follow-Up Only", value=True, key="wb_fu_only")
+# ── Top-level filters ─────────────────────────────────────────────────────────
+col_w, col_i, col_r, col_f = st.columns([2, 2, 2, 1])
+with col_w:
+    week = week_filter("wb_week", in_sidebar=False)
+with col_i:
+    ins = insurance_filter("wb_ins", in_sidebar=False)
+with col_r:
+    reason = result_filter("wb_reason", in_sidebar=False)
+with col_f:
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    fu_only = st.toggle("Follow-Up Only", value=True, key="wb_fu_only")
 
 # ── Follow-Up Queue ─────────────────────────────────────────────────────────
 st.markdown(
@@ -97,6 +102,7 @@ else:
         recon_df[display_cols],
         use_container_width=True,
         hide_index=True,
+        height=450,
         on_select="rerun",
         selection_mode="multi-row",
         column_config={
