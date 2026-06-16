@@ -352,145 +352,155 @@ if not ledger_df.empty:
 
     ledger_df["reconciled_status"] = ledger_df.apply(compute_rec_status, axis=1)
 
-    show_unpaid_only = st.checkbox("⏳ Show unpaid/pending line items only (where Paid < Billed)", value=False, key="ledger_show_unpaid")
-    if show_unpaid_only:
-        # A week is unresolved (pending) if:
-        # 1. It is a payroll week and week_paid_hours < week_payroll_hours - 0.9
-        # 2. OR it is a remittance-only week and week_paid_hours < week_billed_hours - 0.9
-        is_payroll_week = ledger_df["week_payroll_hours"].fillna(0.0).astype(float) > 0.0
+    # Map first_dos to Wednesday-start week to group daily claims of the same week together
+    import datetime
+    def to_week_start(val):
+        if pd.isna(val):
+            return None
+        dt = pd.to_datetime(val).date()
+        offset = (dt.weekday() - 2) % 7
+        return dt - datetime.timedelta(days=offset)
+
+    ledger_df["week_start"] = ledger_df["first_dos"].apply(to_week_start)
+    ledger_df["week_end"] = ledger_df["week_start"].apply(lambda d: d + datetime.timedelta(days=6) if d else None)
+
+    # Save a clean copy of daily claims for drilldown details
+    daily_claims_df = ledger_df.copy()
+
+    def get_tcn_display(group):
+        tcns = group["tcn"].dropna().unique()
+        tcns = [t for t in tcns if t != "—" and t != ""]
+        if len(tcns) == 0:
+            return "—"
+        elif len(tcns) == 1:
+            return tcns[0]
+        else:
+            latest_row = group.loc[group["payment_date"].idxmax()] if group["payment_date"].notna().any() else group.iloc[-1]
+            return latest_row.get("tcn") or "Multiple"
+
+    def get_payment_date_display(group):
+        dates = group["payment_date"].dropna()
+        if dates.empty:
+            return None
+        return dates.max()
+
+    def get_status_display(group):
+        detailed = group["week_result_detailed"].dropna().unique()
+        detailed = [d for d in detailed if d]
+        if len(detailed) > 0:
+            status = detailed[0]
+            if status == "Billed Short":
+                return "Billed Short"
+            elif status == "Paid Less":
+                return "Short Paid"
+            elif status == "Not Billed":
+                return "Not Billed"
+            elif status == "Payer Reversal":
+                return "Payer Reversal"
+            return status
         
+        # Fallback to computing from hours:
+        p_hrs = float(group["week_payroll_hours"].iloc[0] or 0.0)
+        b_hrs = float(group["week_billed_hours"].iloc[0] or 0.0)
+        pd_hrs = float(group["week_paid_hours"].iloc[0] or 0.0)
+        if p_hrs > 0:
+            if b_hrs < p_hrs - 0.9:
+                return "Billed Short"
+            if pd_hrs < b_hrs - 0.9:
+                return f"Short Paid ({b_hrs - pd_hrs:.1f} hrs remain)"
+            if pd_hrs < p_hrs - 0.9:
+                return "Short Paid"
+        else:
+            if pd_hrs < b_hrs - 0.9:
+                return "Short Paid"
+        return "Paid in Full"
+
+    consolidated = []
+    for (w_start, w_end), group in ledger_df.groupby(["week_start", "week_end"]):
+        w_billed_hrs = group["week_billed_hours"].iloc[0]
+        w_paid_hrs = group["week_paid_hours"].iloc[0]
+        
+        # Find hourly rate from the claims in this group
+        rate = None
+        for _, r in group.iterrows():
+            b_hrs = abs(float(r.get("billed_hours") or 0.0))
+            charge = abs(float(r.get("charge_amount") or 0.0))
+            if b_hrs > 0.1 and charge > 0.0:
+                rate = charge / b_hrs
+                break
+        if rate is None:
+            for _, r in group.iterrows():
+                p_hrs = abs(float(r.get("paid_hours") or 0.0))
+                pay = abs(float(r.get("payment_amount") or 0.0))
+                if p_hrs > 0.1 and pay > 0.0:
+                    rate = pay / p_hrs
+                    break
+        
+        sum_payment = group["payment_amount"].sum()
+        if abs(w_billed_hrs - w_paid_hrs) <= 0.01:
+            charge_amount = sum_payment
+        elif rate is not None:
+            charge_amount = round(w_billed_hrs * rate, 2)
+        else:
+            charge_amount = group["charge_amount"].max()
+        
+        consolidated.append({
+            "first_dos": w_start,
+            "last_dos": w_end,
+            "payment_date": get_payment_date_display(group),
+            "reconciled_status": get_status_display(group),
+            "week_payroll_hours": group["week_payroll_hours"].iloc[0],
+            "billed_hours": w_billed_hrs,
+            "paid_hours": w_paid_hrs,
+            "week_pending_hrs": group["week_pending_hrs"].iloc[0],
+            "charge_amount": charge_amount,
+            "payment_amount": sum_payment,
+            "amt_delta": max(round(charge_amount - sum_payment, 2), 0.0),
+            "tcn": get_tcn_display(group),
+        })
+    
+    consolidated_df = pd.DataFrame(consolidated)
+    if not consolidated_df.empty:
+        consolidated_df = consolidated_df.sort_values("first_dos", ascending=False)
+
+    show_unpaid_only = st.checkbox("⏳ Show unpaid/pending line items only (where Paid < Billed)", value=False, key="ledger_show_unpaid")
+    if show_unpaid_only and not consolidated_df.empty:
+        is_payroll_week = consolidated_df["week_payroll_hours"].fillna(0.0).astype(float) > 0.0
         is_unresolved_payroll = (
             is_payroll_week & 
-            (ledger_df["week_paid_hours"].fillna(0.0).astype(float) < ledger_df["week_payroll_hours"].fillna(0.0).astype(float) - 0.9)
+            (consolidated_df["paid_hours"].fillna(0.0).astype(float) < consolidated_df["week_payroll_hours"].fillna(0.0).astype(float) - 0.9)
         )
         is_unresolved_remit = (
             ~is_payroll_week & 
-            (ledger_df["week_paid_hours"].fillna(0.0).astype(float) < ledger_df["week_billed_hours"].fillna(0.0).astype(float) - 0.9)
+            (consolidated_df["paid_hours"].fillna(0.0).astype(float) < consolidated_df["billed_hours"].fillna(0.0).astype(float) - 0.9)
         )
-        
-        ledger_df = ledger_df[is_unresolved_payroll | is_unresolved_remit]
+        consolidated_df = consolidated_df[is_unresolved_payroll | is_unresolved_remit]
 
-        if not ledger_df.empty:
-            # Map first_dos to Wednesday-start week to group daily claims of the same week together
-            import datetime
-            def to_week_start(val):
-                if pd.isna(val):
-                    return None
-                dt = pd.to_datetime(val).date()
-                offset = (dt.weekday() - 2) % 7
-                return dt - datetime.timedelta(days=offset)
-
-            ledger_df["week_start"] = ledger_df["first_dos"].apply(to_week_start)
-            ledger_df["week_end"] = ledger_df["week_start"].apply(lambda d: d + datetime.timedelta(days=6) if d else None)
-
-            def get_tcn_display(group):
-                tcns = group["tcn"].dropna().unique()
-                tcns = [t for t in tcns if t != "—" and t != ""]
-                if len(tcns) == 0:
-                    return "—"
-                elif len(tcns) == 1:
-                    return tcns[0]
-                else:
-                    latest_row = group.loc[group["payment_date"].idxmax()] if group["payment_date"].notna().any() else group.iloc[-1]
-                    return latest_row.get("tcn") or "Multiple"
-
-            def get_payment_date_display(group):
-                dates = group["payment_date"].dropna()
-                if dates.empty:
-                    return None
-                return dates.max()
-
-            def get_status_display(group):
-                detailed = group["week_result_detailed"].dropna().unique()
-                detailed = [d for d in detailed if d]
-                if len(detailed) > 0:
-                    status = detailed[0]
-                    if status == "Billed Short":
-                        return "Billed Short"
-                    elif status == "Paid Less":
-                        return "Short Paid"
-                    elif status == "Not Billed":
-                        return "Not Billed"
-                    elif status == "Payer Reversal":
-                        return "Payer Reversal"
-                    return status
-                
-                # Fallback to computing from hours:
-                p_hrs = float(group["week_payroll_hours"].iloc[0] or 0.0)
-                b_hrs = float(group["week_billed_hours"].iloc[0] or 0.0)
-                pd_hrs = float(group["week_paid_hours"].iloc[0] or 0.0)
-                if p_hrs > 0:
-                    if b_hrs < p_hrs - 0.9:
-                        return "Billed Short"
-                    if pd_hrs < b_hrs - 0.9:
-                        return f"Short Paid ({b_hrs - pd_hrs:.1f} hrs remain)"
-                    if pd_hrs < p_hrs - 0.9:
-                        return "Short Paid"
-                else:
-                    if pd_hrs < b_hrs - 0.9:
-                        return "Short Paid"
-                return "Paid in Full"
-
-            consolidated = []
-            for (w_start, w_end), group in ledger_df.groupby(["week_start", "week_end"]):
-                w_billed_hrs = group["week_billed_hours"].iloc[0]
-                w_paid_hrs = group["week_paid_hours"].iloc[0]
-                
-                # Find hourly rate from the claims in this group
-                rate = None
-                for _, r in group.iterrows():
-                    b_hrs = abs(float(r.get("billed_hours") or 0.0))
-                    charge = abs(float(r.get("charge_amount") or 0.0))
-                    if b_hrs > 0.1 and charge > 0.0:
-                        rate = charge / b_hrs
-                        break
-                if rate is None:
-                    for _, r in group.iterrows():
-                        p_hrs = abs(float(r.get("paid_hours") or 0.0))
-                        pay = abs(float(r.get("payment_amount") or 0.0))
-                        if p_hrs > 0.1 and pay > 0.0:
-                            rate = pay / p_hrs
-                            break
-                
-                sum_payment = group["payment_amount"].sum()
-                if abs(w_billed_hrs - w_paid_hrs) <= 0.01:
-                    charge_amount = sum_payment
-                elif rate is not None:
-                    charge_amount = round(w_billed_hrs * rate, 2)
-                else:
-                    charge_amount = group["charge_amount"].max()
-                
-                consolidated.append({
-                    "first_dos": w_start,
-                    "last_dos": w_end,
-                    "payment_date": get_payment_date_display(group),
-                    "reconciled_status": get_status_display(group),
-                    "week_payroll_hours": group["week_payroll_hours"].iloc[0],
-                    "billed_hours": w_billed_hrs,
-                    "paid_hours": w_paid_hrs,
-                    "week_pending_hrs": group["week_pending_hrs"].iloc[0],
-                    "charge_amount": charge_amount,
-                    "payment_amount": sum_payment,
-                    "amt_delta": max(round(charge_amount - sum_payment, 2), 0.0),
-                    "tcn": get_tcn_display(group),
-                })
-            
-            ledger_df = pd.DataFrame(consolidated)
-
-if ledger_df.empty:
+if ledger_df.empty or consolidated_df.empty:
     st.info("No remittance records found for this client.", icon="ℹ️")
 else:
+    st.markdown(
+        """
+        <div style='font-size:0.82rem;color:#8892a4;margin-bottom:8px;'>
+            💡 Select any row in the table below to inspect daily claims and check/TCN numbers.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     display_cols = [c for c in [
         "first_dos", "last_dos", "payment_date", "reconciled_status",
         "week_payroll_hours", "billed_hours", "paid_hours", "week_pending_hrs",
         "charge_amount", "payment_amount", "amt_delta", "tcn",
-    ] if c in ledger_df.columns]
+    ] if c in consolidated_df.columns]
 
-    st.dataframe(
-        ledger_df[display_cols],
+    selection = st.dataframe(
+        consolidated_df[display_cols],
         use_container_width=True,
         hide_index=True,
-        height=min((len(ledger_df) + 1) * 35 + 3, 450),
+        on_select="rerun",
+        selection_mode="single-row",
+        height=min((len(consolidated_df) + 1) * 35 + 3, 350),
         column_config={
             "first_dos":          st.column_config.DateColumn("First DOS"),
             "last_dos":           st.column_config.DateColumn("Last DOS"),
@@ -505,6 +515,57 @@ else:
             "amt_delta":          st.column_config.NumberColumn("$ Delta", format="$%.2f"),
             "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
         },
+        key="consolidated_ledger_table",
     )
-    st.caption(f"{len(ledger_df):,} remittance records found")
+    st.caption(f"{len(consolidated_df):,} weeks tracked in ledger")
+
+    # Display drilldown if a week is selected
+    selected_rows = selection.selection.rows if selection.selection else []
+    if selected_rows:
+        selected_idx = selected_rows[0]
+        selected_week_start = consolidated_df.iloc[selected_idx]["first_dos"]
+        selected_week_end = consolidated_df.iloc[selected_idx]["last_dos"]
+
+        week_claims = daily_claims_df[daily_claims_df["week_start"] == selected_week_start].copy()
+        
+        st.markdown(
+            f"""
+            <div style='margin-top:1.5rem;margin-bottom:0.5rem;'>
+                <h4 style='margin:0;font-size:1.1rem;font-weight:600;color:#e8eaf0;'>🔍 Daily Claims Detail</h4>
+                <div style='font-size:0.78rem;color:#8892a4;margin-top:2px;'>
+                    Showing individual daily remittance records for week <b>{selected_week_start}</b> to <b>{selected_week_end}</b>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        daily_display_cols = [
+            "first_dos", "payment_date", "reconciled_status",
+            "billed_hours", "paid_hours",
+            "charge_amount", "payment_amount", "amt_delta", "tcn"
+        ]
+        
+        week_claims = week_claims.sort_values("first_dos")
+
+        st.dataframe(
+            week_claims[daily_display_cols],
+            use_container_width=True,
+            hide_index=True,
+            height=min((len(week_claims) + 1) * 35 + 3, 250),
+            column_config={
+                "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
+                "payment_date":       st.column_config.DateColumn("Payment Date"),
+                "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
+                "billed_hours":       st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
+                "paid_hours":         st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
+                "charge_amount":      st.column_config.NumberColumn("Billed $", format="$%.2f"),
+                "payment_amount":     st.column_config.NumberColumn("Paid $", format="$%.2f"),
+                "amt_delta":          st.column_config.NumberColumn("$ Delta", format="$%.2f"),
+                "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
+            }
+        )
+    else:
+        st.info("💡 Click on any week row in the table above to view daily claim details, TCNs, and payment dates.", icon="ℹ️")
+
 

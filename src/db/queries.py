@@ -423,7 +423,15 @@ def client_ledger(
                     ELSE 'Unskilled'
                 END as care_type
             FROM remittance
-            WHERE UPPER(client_name_combined) = UPPER(?)
+            WHERE (
+                UPPER(client_name_combined) = UPPER(?)
+                OR UPPER(client_name_combined) IN (
+                    SELECT DISTINCT UPPER(client_name_remittance)
+                    FROM reconciliation
+                    WHERE UPPER(regexp_replace(client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\))$', '')) = UPPER(?)
+                       OR UPPER(client_name_remittance) = UPPER(?)
+                )
+            )
               AND is_latest = True
         ),
         rem_daily AS (
@@ -498,7 +506,7 @@ def client_ledger(
         {'ORDER BY COALESCE(ra.first_dos, r.week_start_date) ASC, ra.payment_date ASC' if sort_asc else 'ORDER BY ra.payment_date DESC, COALESCE(ra.first_dos, r.week_start_date) DESC'}
     """
     all_params = [
-        stripped_name,
+        stripped_name, stripped_name, stripped_name,
         care_type, care_type,
         care_type, care_type,
         stripped_name,
@@ -574,6 +582,7 @@ def client_summary(conn: duckdb.DuckDBPyConnection, client_name: str, care_type:
     sql = f"""
         SELECT
             COALESCE(MIN(client_name_payroll), MIN(client_name_remittance)) AS client_name_payroll,
+            MIN(client_name_remittance) AS client_name_remittance,
             insurance,
             SUM(billed_hours)   AS ytd_billed_hrs,
             SUM(paid_hours)     AS ytd_paid_hrs,
