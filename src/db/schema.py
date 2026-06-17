@@ -21,11 +21,15 @@ CREATE TABLE IF NOT EXISTS name_match (
 );
 
 CREATE TABLE IF NOT EXISTS copay_clients (
-    id           INTEGER PRIMARY KEY,
-    client_name  VARCHAR NOT NULL,   -- payroll name (may include role suffix)
-    insurance    VARCHAR,
-    is_active    BOOLEAN DEFAULT TRUE,
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id             INTEGER PRIMARY KEY,
+    client_name    VARCHAR NOT NULL,   -- payroll name (may include role suffix)
+    insurance      VARCHAR,
+    is_active      BOOLEAN DEFAULT TRUE,
+    copay_amount   DECIMAL(10,2),      -- monthly copay dollar amount
+    effective_from DATE,               -- copay start date (NULL = unknown)
+    effective_to   DATE,               -- copay end date (NULL = still active)
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS employees (
