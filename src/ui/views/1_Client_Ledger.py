@@ -409,6 +409,11 @@ if not ledger_df.empty:
             elif status == "Payer Reversal":
                 return "Payer Reversal"
             return status
+        # ── Paid Extra override: if paid > payroll after all transactions ──
+        p_hrs_chk = float(group["week_payroll_hours"].iloc[0] or 0.0)
+        pd_hrs_chk = float(group["week_paid_hours"].iloc[0] or 0.0)
+        if p_hrs_chk > 0 and pd_hrs_chk > p_hrs_chk + 0.9:
+            return "Paid Extra"
         
         # Fallback to computing from hours:
         p_hrs = float(group["week_payroll_hours"].iloc[0] or 0.0)
@@ -428,6 +433,8 @@ if not ledger_df.empty:
                 return "Paid Extra"
             if pd_hrs < b_hrs - 0.9:
                 return "Short Paid"
+        if pd_hrs > p_hrs + 0.9:
+            return "Paid Extra"
         return "Paid in Full"
 
     consolidated = []
