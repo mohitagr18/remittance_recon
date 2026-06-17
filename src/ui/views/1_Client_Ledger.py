@@ -279,7 +279,7 @@ if active_client_chart_key in st.session_state and st.session_state[active_clien
     sel = st.session_state[active_client_chart_key]
     if "selection" in sel and "points" in sel["selection"] and sel["selection"]["points"]:
         pt = sel["selection"]["points"][0]
-        selected_week_str = pt.get("x")
+        selected_week_str = pt.get("x") or pt.get("label")
         if selected_week_str:
             try:
                 selected_week = pd.to_datetime(selected_week_str).date()
