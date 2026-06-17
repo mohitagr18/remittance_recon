@@ -32,8 +32,8 @@ STATUS_COLORS = {
 STATUS_SORT = {
     "Unpaid":       0,
     "Partial":      1,
-    "No Claims":    2,
-    "Paid in Full": 3,
+    "Paid in Full": 2,
+    "No Claims":    3,
 }
 
 
