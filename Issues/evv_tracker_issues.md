@@ -103,16 +103,25 @@ The grouping fix from commit `0ce4e20` is working, but the Excel tracker itself 
 
 ---
 
-### Category 6 — FLEMING, Ja'QUEZ — Persistent Reconciliation Gap (18 billed rows)
+### Category 6 — FLEMING, Ja'QUEZ — Partial Weekly LPN Payments (18 billed rows)
 
-After the name-mapping fix (commit `0ce4e20`), FLEMING is now correctly matched in the DB but shows large per-week amount differences. The DB amount is frequently 485.52 while the tracker shows 1,445–3,113.
+After the name-mapping fix (commit `0ce4e20`), FLEMING is now correctly matched in the DB but shows large per-week amount differences. The DB amount is frequently $485.52 while the tracker shows $1,445–$3,113.
 
-- 485.52 appears to represent a single visit payment in remittance.
-- The tracker records full weekly expected billed amounts.
+**Investigated 2026-06-17:** Confirmed this is **not a PCA/LPN service type mix-up**. All Fleming remittance rows in the DB are billed under PDN (Private Duty Nursing) at the LPN rate (~$55.24/hr). The $485.52 recurring amount corresponds to exactly 8.79 LPN hours — a small partial week, not a PCA visit. PCA rates (~$17–20/hr) do not match the per-unit rate seen here.
 
-This is no longer a mapping or grouping bug — it is a genuine reconciliation shortfall where the remittance system is not paying out the full weekly tracked amounts for this client.
+`skilled_tracker_clients` currently has Fleming registered as a single row: **S9124 / LPN / PDN**.
 
-**Action required:** Review FLEMING remittance records directly to determine whether payments are being split across different periods or bill codes not captured in the tracker.
+**What is actually happening:** The remittance system is paying Fleming in irregular partial-week claims — some weeks only 8.79 hours ($485.52) are remitted, while other weeks show catch-up payments bundled across multiple claim lines totalling $2,153–$3,598. One week (01/01/26–01/06/26) shows `Paid with Exception` with $0 paid on a $2,668.32 charge, suggesting a prior authorization or coverage issue for that period.
+
+| Pattern | Example weeks | DB amount | Tracker amount |
+|---|---|---:|---:|
+| Partial payment (8.79 hrs) | 01/07, 01/14, 01/21, 02/04, 02/11 | 485.52 | ~3,113.04 |
+| Catch-up multi-claim | 02/18, 03/25, 04/01, 04/22, 05/13 | 1,930–3,598 | ~3,113.04 |
+| Paid with Exception ($0 paid) | 01/01/26–01/06/26 | 0.00 | 2,668.32 |
+
+**Root cause:** The tracker records the full expected weekly LPN amount, but the payer is splitting and delaying payments across claim lines and weeks. This is a genuine remittance timing/partial-payment issue, not a service type or name mapping defect.
+
+**Action required:** Review FLEMING claim-level remittance records with billing team to determine why only partial hours are being authorized and paid each week, and whether the remaining hours are being rebilled or denied.
 
 ---
 
