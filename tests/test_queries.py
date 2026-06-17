@@ -231,3 +231,133 @@ class TestQueries:
 
 
 
+
+
+class TestCopayManagement:
+    """Tests for copay_management() and upsert_copay_client() queries."""
+
+    def test_copay_management_returns_all_clients(self, conn_with_copay):
+        df = q.copay_management(conn_with_copay)
+        assert len(df) >= 14
+
+    def test_copay_management_has_required_columns(self, conn_with_copay):
+        df = q.copay_management(conn_with_copay)
+        for col in ["id", "client_name", "copay_amount", "effective_from", "effective_to", "is_active"]:
+            assert col in df.columns, f"Missing column: {col}"
+
+    def test_copay_amounts_loaded_correctly(self, conn_with_copay):
+        """Spot-check known copay amounts from whiteboard."""
+        df = q.copay_management(conn_with_copay)
+        amounts = dict(zip(df["client_name"], df["copay_amount"]))
+        assert amounts.get("BUTTS, SHIRLEY")    == 153.00
+        assert amounts.get("BUTLER, JANNIE")    == 643.59
+        assert amounts.get("BERRYMAN, SHELIAH") == 383.00
+        assert amounts.get("RICHEY, MICHAH")    == 749.00
+        assert amounts.get("TOWERS, LINDA")     == 1176.00
+        assert amounts.get("CLAIBORNE, GEORGE") == 535.00
+
+    def test_new_clients_present(self, conn_with_copay):
+        """PEEBLES, LUCY and TRISTVAN-BOTTE, VIVIAN were added from whiteboard."""
+        df = q.copay_management(conn_with_copay)
+        names = df["client_name"].tolist()
+        assert "PEEBLES, LUCY" in names
+        assert "TRISTVAN-BOTTE, VIVIAN" in names
+
+    def test_upsert_updates_amount(self, conn_with_copay):
+        """upsert_copay_client() updates amount and dates correctly."""
+        df = q.copay_management(conn_with_copay)
+        butts = df[df["client_name"] == "BUTTS, SHIRLEY"].iloc[0]
+        client_id = int(butts["id"])
+
+        # Update to $156.00 — the suspected correct amount from 8-month pattern
+        q.upsert_copay_client(
+            conn_with_copay, client_id=client_id,
+            copay_amount=156.00, effective_from="2025-10-01",
+            effective_to=None, is_active=True,
+        )
+        updated = q.copay_management(conn_with_copay)
+        row = updated[updated["client_name"] == "BUTTS, SHIRLEY"].iloc[0]
+        assert float(row["copay_amount"]) == 156.00
+        assert str(row["effective_from"]).startswith("2025-10-01")
+
+        # Restore original
+        q.upsert_copay_client(conn_with_copay, client_id=client_id,
+                              copay_amount=153.00, effective_from=None,
+                              effective_to=None, is_active=True)
+
+    def test_upsert_sets_inactive(self, conn_with_copay):
+        """Setting is_active=False marks client inactive."""
+        df = q.copay_management(conn_with_copay)
+        peebles = df[df["client_name"] == "PEEBLES, LUCY"].iloc[0]
+        client_id = int(peebles["id"])
+
+        q.upsert_copay_client(conn_with_copay, client_id=client_id,
+                              copay_amount=174.14, effective_from=None,
+                              effective_to=None, is_active=False)
+        updated = q.copay_management(conn_with_copay)
+        row = updated[updated["client_name"] == "PEEBLES, LUCY"].iloc[0]
+        assert row["is_active"] == False
+
+        # Restore
+        q.upsert_copay_client(conn_with_copay, client_id=client_id,
+                              copay_amount=174.14, effective_from=None,
+                              effective_to=None, is_active=True)
+
+
+class TestCopayMonthlyStatusQuery:
+    """Tests for copay_monthly_status() against the real recon.duckdb."""
+
+    def test_returns_dataframe(self, conn_recon):
+        df = q.copay_monthly_status(conn_recon)
+        assert hasattr(df, "columns")
+
+    def test_required_columns_present(self, conn_recon):
+        df = q.copay_monthly_status(conn_recon)
+        for col in ["client_name", "copay_amount", "month_label",
+                    "total_billed_dollars", "total_paid_dollars",
+                    "pending_dollars", "copay_status", "copay_note"]:
+            assert col in df.columns, f"Missing column: {col}"
+
+    def test_butler_apr2026_is_copay(self, conn_recon):
+        """BUTLER Apr 2026 — pending $643.59 = copay $643.59 → Good / Copay."""
+        df = q.copay_monthly_status(conn_recon)
+        row = df[(df["client_name"].str.upper() == "BUTLER, JANNIE") &
+                 (df["month_label"] == "Apr 2026")]
+        assert not row.empty, "BUTLER Apr 2026 not found"
+        assert row.iloc[0]["copay_status"] == "Good"
+        assert row.iloc[0]["copay_note"] == "Copay"
+
+    def test_cochran_fully_paid_months(self, conn_recon):
+        """COCHRAN Jul 2025 — $0 pending → Good / note is None."""
+        df = q.copay_monthly_status(conn_recon)
+        row = df[(df["client_name"].str.upper() == "COCHRAN, TELEECA") &
+                 (df["month_label"] == "Jul 2025")]
+        assert not row.empty, "COCHRAN Jul 2025 not found"
+        assert row.iloc[0]["copay_status"] == "Good"
+        import pandas as pd
+        assert pd.isna(row.iloc[0]["copay_note"]) or row.iloc[0]["copay_note"] is None or str(row.iloc[0]["copay_note"]) in ("None", "")
+
+    def test_berryman_apr2025_exceeds_copay(self, conn_recon):
+        """BERRYMAN Apr 2025 — pending $1,153.79 > copay $383 → Follow up / Exceeds Copay."""
+        df = q.copay_monthly_status(conn_recon)
+        row = df[(df["client_name"].str.upper() == "BERRYMAN, SHELIAH") &
+                 (df["month_label"] == "Apr 2025")]
+        assert not row.empty, "BERRYMAN Apr 2025 not found"
+        assert row.iloc[0]["copay_status"] == "Follow up"
+        assert row.iloc[0]["copay_note"] == "Exceeds Copay"
+
+    def test_status_values_are_valid(self, conn_recon):
+        """All copay_status values must be from the known set."""
+        df = q.copay_monthly_status(conn_recon)
+        valid = {"Good", "Follow up"}
+        assert set(df["copay_status"].dropna().unique()).issubset(valid)
+
+    def test_copay_note_values_are_valid(self, conn_recon):
+        """All non-null copay_note values must be from the known set."""
+        import pandas as pd
+        df = q.copay_monthly_status(conn_recon)
+        valid = {"Copay", "Exceeds Copay", "Partial Copay"}
+        for val in df["copay_note"].unique():
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                continue
+            assert val in valid, f"Unexpected copay_note value: {val}"
