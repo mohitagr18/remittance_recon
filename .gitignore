@@ -218,13 +218,13 @@ __marimo__/
 .streamlit/secrets.toml
 
 # input data
-input/
+# input/
 archive/
-data/
-.db
-.duckdb
-*.db
-*.duckdb
+# data/
+# .db
+# .duckdb
+# *.db
+# *.duckdb
 
 # OS generated files
 .DS_Store
