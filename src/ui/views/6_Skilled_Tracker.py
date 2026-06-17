@@ -70,85 +70,24 @@ def _fmt_usd(v: float) -> str:
 
 # ── Comments panel ─────────────────────────────────────────────────────────────
 def _render_comments(conn, display_name: str, bill_code: str, billing_week: str, sel_key: str):
-    """Render comment thread with inline edit/delete + post form."""
-    key_prefix = f"cmt_{display_name}_{bill_code}_{billing_week}".replace(" ", "_").replace("/", "_").replace("'", "")
-    reset_flag = f"reset_{sel_key}"
-    comments_df = Q.get_tracker_comments(conn, display_name, bill_code, billing_week)
-
-    with st.container():
-        st.markdown(f"**💬 Comments — {display_name} ({bill_code}) · {billing_week}**")
-        if comments_df.empty:
-            st.caption("No comments yet.")
-        else:
-            for _, row in comments_df.iterrows():
-                cid = int(row["id"])
-                ts  = pd.to_datetime(row["created_at"]).strftime("%b %d, %Y  %-I:%M %p")
-                edit_key   = f"editing_{key_prefix}_{cid}"
-                confirm_key = f"confirm_del_{key_prefix}_{cid}"
-
-                # ── Edit mode ──────────────────────────────────────────────
-                if st.session_state.get(edit_key):
-                    with st.form(key=f"edit_form_{key_prefix}_{cid}"):
-                        edited = st.text_area("Edit comment", value=row["comment_text"],
-                                              key=f"edit_txt_{key_prefix}_{cid}", height=80)
-                        c1, c2 = st.columns(2)
-                        if c1.form_submit_button("💾 Save", use_container_width=True):
-                            if edited.strip():
-                                Q.update_tracker_comment(conn, cid, edited.strip())
-                                del st.session_state[edit_key]
-                                st.rerun()
-                        if c2.form_submit_button("✕ Cancel", use_container_width=True):
-                            del st.session_state[edit_key]
-                            st.rerun()
-
-                # ── Normal view ────────────────────────────────────────────
-                else:
-                    bubble_col, action_col = st.columns([10, 1])
-                    with bubble_col:
-                        st.markdown(
-                            f"<div style='background:#1e2130;border-radius:8px;padding:8px 12px;margin-bottom:4px;'>"
-                            f"<span style='color:#4f98a3;font-weight:600;'>{row['author']}</span>"
-                            f"<span style='color:#797876;font-size:0.85em;margin-left:10px;'>{ts}</span><br/>"
-                            f"<span style='color:#cdccca;'>{row['comment_text']}</span></div>",
-                            unsafe_allow_html=True,
-                        )
-                    with action_col:
-                        st.markdown("<div style='padding-top:6px'></div>", unsafe_allow_html=True)
-                        if st.button("✏️", key=f"btn_edit_{key_prefix}_{cid}", help="Edit", use_container_width=True):
-                            st.session_state[edit_key] = True
-                            st.rerun()
-
-                    # Confirm-delete flow
-                    if st.session_state.get(confirm_key):
-                        cd1, cd2 = st.columns(2)
-                        if cd1.button("🗑 Yes, delete", key=f"yes_del_{key_prefix}_{cid}", use_container_width=True):
-                            Q.delete_tracker_comment(conn, cid)
-                            del st.session_state[confirm_key]
-                            st.rerun()
-                        if cd2.button("Cancel", key=f"no_del_{key_prefix}_{cid}", use_container_width=True):
-                            del st.session_state[confirm_key]
-                            st.rerun()
-                    else:
-                        if st.button("🗑️", key=f"btn_del_{key_prefix}_{cid}", help="Delete", use_container_width=True):
-                            st.session_state[confirm_key] = True
-                            st.rerun()
-
-        st.divider()
-        with st.form(key=f"form_{key_prefix}"):
-            col1, col2 = st.columns([3, 1])
-            new_comment = col1.text_area("Add a comment", key=f"txt_{key_prefix}",
-                                         label_visibility="collapsed", placeholder="Add a comment…", height=68)
-            author = col2.text_input("Your name", key=f"auth_{key_prefix}",
-                                     label_visibility="collapsed", placeholder="Your name")
-            submitted = st.form_submit_button("Post", use_container_width=True)
-            if submitted:
-                if new_comment.strip() and author.strip():
-                    Q.add_tracker_comment(conn, display_name, bill_code, billing_week,
-                                          new_comment.strip(), author.strip())
-                    st.session_state[reset_flag] = True
-                    st.rerun()
-                else:
-                    st.warning("Both comment and your name are required.")
+    """Post-only form. Comments are displayed inline in the table."""
+    key_prefix  = f"cmt_{display_name}_{bill_code}_{billing_week}".replace(" ", "_").replace("/", "_").replace("'", "")
+    reset_flag  = f"reset_{sel_key}"
+    st.markdown(f"**💬 Add comment — {display_name} ({bill_code}) · {billing_week}**")
+    with st.form(key=f"form_{key_prefix}"):
+        col1, col2 = st.columns([3, 1])
+        new_comment = col1.text_area("Comment", key=f"txt_{key_prefix}",
+                                     label_visibility="collapsed", placeholder="Type your comment…", height=68)
+        author = col2.text_input("Your name", key=f"auth_{key_prefix}",
+                                 label_visibility="collapsed", placeholder="Your name")
+        if st.form_submit_button("Post", use_container_width=True):
+            if new_comment.strip() and author.strip():
+                Q.add_tracker_comment(conn, display_name, bill_code, billing_week,
+                                      new_comment.strip(), author.strip())
+                st.session_state[reset_flag] = True
+                st.rerun()
+            else:
+                st.warning("Both comment and your name are required.")
 
 
 # ── Weekly table ───────────────────────────────────────────────────────────────
@@ -194,12 +133,18 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
         display_df[col] = display_df[col].apply(_fmt_usd)
     display_df["Status"] = display_df["Status"].map(lambda s: f"{STATUS_COLORS.get(s, '')} {s}")
 
-    # Comment count badge
-    def _comment_count(row):
+    # Build Comments column: full text list per row
+    def _comment_text(row):
         cdf = Q.get_tracker_comments(conn, row["display_name"], row["bill_code"], week_label)
-        return f"💬 {len(cdf)}" if len(cdf) else "💬"
+        if cdf.empty:
+            return ""
+        lines = []
+        for _, c in cdf.iterrows():
+            ts = pd.to_datetime(c["created_at"]).strftime("%-m/%-d %-I:%M %p")
+            lines.append(f"{c['author']} [{ts}]: {c['comment_text']}")
+        return "\n".join(lines)
 
-    display_df["Comments"] = df.apply(_comment_count, axis=1)
+    display_df["Comments"] = df.apply(_comment_text, axis=1)
 
     # Totals row (always from full unfiltered df for accurate totals)
     full_df = Q.get_tracker_week_data(conn, str(ws), str(we))
@@ -213,7 +158,14 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
     }
     display_df = pd.concat([display_df, pd.DataFrame([totals])], ignore_index=True)
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Comments": st.column_config.TextColumn("💬 Comments", width="large"),
+        }
+    )
 
     # Row selector for comments — resets to "— select —" after posting
     sel_key = f"sel_{month_idx}_{ws}_{we}"
@@ -224,7 +176,7 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
         if sel_key in st.session_state:
             del st.session_state[sel_key]
     client_options = df["display_name"] + " (" + df["bill_code"] + ")"
-    selected = st.selectbox("View / add comments for:", ["— select a client —"] + list(client_options),
+    selected = st.selectbox("Add comment for:", ["— select a client —"] + list(client_options),
                             key=sel_key)
     if selected and selected != "— select a client —":
         idx = list(client_options).index(selected)
