@@ -337,6 +337,8 @@ with tab_evv:
             str(Path(__file__).resolve().parent.parent.parent.parent / "tests" / "test_evv_tracker_validation.py"),
         )
         test_mod = importlib.util.module_from_spec(spec)
+        # Register in sys.modules BEFORE exec so @dataclass can resolve cls.__module__
+        _sys.modules["test_evv_tracker_validation"] = test_mod
         spec.loader.exec_module(test_mod)
 
         with st.spinner("Running validation suite…"):
