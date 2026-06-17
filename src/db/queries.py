@@ -10,6 +10,158 @@ import duckdb
 import pandas as pd
 
 
+# ── Copay Monthly Status ───────────────────────────────────────────────────────
+
+def copay_monthly_status(
+    conn: duckdb.DuckDBPyConnection,
+    year: int | None = None,
+    month: int | None = None,
+) -> pd.DataFrame:
+    """
+    Monthly copay reconciliation view.
+
+    For each copay client × month, sums pending dollars across all weeks
+    and compares to the client's monthly copay_amount.
+
+    Returns columns:
+        client_name, insurance, copay_amount, month_label,
+        total_billed_dollars, total_paid_dollars, pending_dollars,
+        copay_status, copay_note
+    where copay_status ∈ {'Good', 'Follow up'}
+    and   copay_note   ∈ {'Copay', 'Exceeds Copay', 'Partial Copay', None}
+    """
+    month_filter = ""
+    if year:
+        month_filter += f" AND DATE_PART('year', r.week_start_date) = {year}"
+    if month:
+        month_filter += f" AND DATE_PART('month', r.week_start_date) = {month}"
+
+    sql = f"""
+        WITH copay_clients_active AS (
+            SELECT client_name, copay_amount, insurance, effective_from, effective_to
+            FROM copay_clients
+            WHERE is_active = TRUE AND copay_amount IS NOT NULL
+        ),
+        recon_monthly AS (
+            SELECT
+                r.client_name_payroll,
+                r.insurance,
+                DATE_PART('year', r.week_start_date)::INT  AS yr,
+                DATE_PART('month', r.week_start_date)::INT AS mo,
+                SUM(r.billed_hours  * COALESCE(rem.charge_amount  / NULLIF(rem.billed_hours, 0), 0)) AS total_billed_dollars,
+                SUM(r.paid_hours    * COALESCE(rem.payment_amount / NULLIF(rem.paid_hours,   0), 0)) AS total_paid_dollars
+            FROM reconciliation r
+            LEFT JOIN (
+                SELECT
+                    client_name_combined,
+                    SUM(charge_amount)  AS charge_amount,
+                    SUM(payment_amount) AS payment_amount,
+                    SUM(billed_hours)   AS billed_hours,
+                    SUM(paid_hours)     AS paid_hours,
+                    first_dos
+                FROM remittance
+                WHERE is_latest = TRUE
+                GROUP BY client_name_combined, first_dos
+            ) rem
+              ON UPPER(r.client_name_remittance) = UPPER(rem.client_name_combined)
+             AND rem.first_dos BETWEEN r.week_start_date AND r.week_end_date
+            WHERE r.client_name_payroll IN (SELECT client_name FROM copay_clients_active)
+            {month_filter}
+            GROUP BY r.client_name_payroll, r.insurance, yr, mo
+        ),
+        monthly_pending AS (
+            SELECT
+                rm.client_name_payroll AS client_name,
+                rm.insurance,
+                cc.copay_amount,
+                cc.effective_from,
+                cc.effective_to,
+                rm.yr,
+                rm.mo,
+                STRFTIME(MAKE_DATE(rm.yr, rm.mo, 1), '%b %Y') AS month_label,
+                ROUND(COALESCE(rm.total_billed_dollars, 0), 2) AS total_billed_dollars,
+                ROUND(COALESCE(rm.total_paid_dollars,   0), 2) AS total_paid_dollars,
+                ROUND(COALESCE(rm.total_billed_dollars, 0) - COALESCE(rm.total_paid_dollars, 0), 2) AS pending_dollars
+            FROM recon_monthly rm
+            JOIN copay_clients_active cc
+              ON UPPER(cc.client_name) = UPPER(rm.client_name_payroll)
+        )
+        SELECT
+            client_name,
+            insurance,
+            copay_amount,
+            month_label,
+            yr,
+            mo,
+            total_billed_dollars,
+            total_paid_dollars,
+            pending_dollars,
+            CASE
+                WHEN ABS(pending_dollars) <= 1.00
+                    THEN 'Good'
+                WHEN ABS(pending_dollars - copay_amount) <= 1.00
+                    THEN 'Good'
+                WHEN pending_dollars > copay_amount + 1.00
+                    THEN 'Follow up'
+                WHEN pending_dollars > 1.00 AND pending_dollars < copay_amount - 1.00
+                    THEN 'Follow up'
+                ELSE 'Good'
+            END AS copay_status,
+            CASE
+                WHEN ABS(pending_dollars) <= 1.00
+                    THEN NULL
+                WHEN ABS(pending_dollars - copay_amount) <= 1.00
+                    THEN 'Copay'
+                WHEN pending_dollars > copay_amount + 1.00
+                    THEN 'Exceeds Copay'
+                WHEN pending_dollars > 1.00 AND pending_dollars < copay_amount - 1.00
+                    THEN 'Partial Copay'
+                ELSE NULL
+            END AS copay_note
+        FROM monthly_pending
+        ORDER BY client_name, yr, mo
+    """
+    return conn.execute(sql).df()
+
+
+def copay_management(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """All copay clients with their current amounts for the management UI."""
+    return conn.execute("""
+        SELECT
+            id,
+            client_name,
+            insurance,
+            copay_amount,
+            effective_from,
+            effective_to,
+            is_active,
+            updated_at
+        FROM copay_clients
+        ORDER BY client_name
+    """).df()
+
+
+def upsert_copay_client(
+    conn: duckdb.DuckDBPyConnection,
+    client_id: int,
+    copay_amount: float,
+    effective_from: str | None,
+    effective_to: str | None,
+    is_active: bool = True,
+) -> None:
+    """Update a copay client's amount and date range."""
+    conn.execute("""
+        UPDATE copay_clients
+        SET copay_amount   = ?,
+            effective_from = CAST(? AS DATE),
+            effective_to   = CAST(? AS DATE),
+            is_active      = ?,
+            updated_at     = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, [copay_amount, effective_from, effective_to, is_active, client_id])
+
+
+
 
 # ── Weekly Summary ────────────────────────────────────────────────────────────
 
