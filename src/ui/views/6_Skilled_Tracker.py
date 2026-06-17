@@ -142,7 +142,7 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
         for _, c in cdf.iterrows():
             ts = pd.to_datetime(c["created_at"]).strftime("%-m/%-d %-I:%M %p")
             lines.append(f"{c['author']} [{ts}]: {c['comment_text']}")
-        return "\n".join(lines)
+        return "  |  ".join(lines)
 
     display_df["Comments"] = df.apply(_comment_text, axis=1)
 
