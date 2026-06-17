@@ -143,10 +143,7 @@ with col_s:
     st.selectbox(
         "🩺 Skilled Clients (PDN)",
         options=skilled_clients,
-        index=None if st.session_state.get("skilled_selector") is None else (
-            skilled_clients.index(st.session_state.skilled_selector) 
-            if st.session_state.skilled_selector in skilled_clients else None
-        ),
+        index=None,
         placeholder="Search skilled client...",
         key="skilled_selector",
         on_change=on_skilled_change,
@@ -156,10 +153,7 @@ with col_u:
     st.selectbox(
         "🏡 Unskilled Clients",
         options=unskilled_clients,
-        index=None if st.session_state.get("unskilled_selector") is None else (
-            unskilled_clients.index(st.session_state.unskilled_selector) 
-            if st.session_state.unskilled_selector in unskilled_clients else None
-        ),
+        index=None,
         placeholder="Search unskilled client...",
         key="unskilled_selector",
         on_change=on_unskilled_change,
@@ -279,7 +273,7 @@ if active_client_chart_key in st.session_state and st.session_state[active_clien
     sel = st.session_state[active_client_chart_key]
     if "selection" in sel and "points" in sel["selection"] and sel["selection"]["points"]:
         pt = sel["selection"]["points"][0]
-        selected_week_str = pt.get("x") or pt.get("label")
+        selected_week_str = pt.get("x")
         if selected_week_str:
             try:
                 selected_week = pd.to_datetime(selected_week_str).date()

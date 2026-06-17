@@ -15,8 +15,6 @@ _LAYOUT_DEFAULTS = dict(
     plot_bgcolor="#1e2130",
     font=dict(family="Inter", color="#e8eaf0", size=12),
     margin=dict(l=12, r=12, t=36, b=12),
-    clickmode="event+select",
-    dragmode="select",
     legend=dict(
         bgcolor="rgba(0,0,0,0)",
         font=dict(color="#c8cfe0", size=11),
