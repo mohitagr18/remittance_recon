@@ -80,9 +80,9 @@ def parse_excel_tracker(path: str | Path) -> pd.DataFrame:
                 "billing_week": current_week or "",
                 "display_name": c0,
                 "bill_code":    c1,
-                "billed_amt":   safe_float(row[4]) if len(row) > 4 else 0.0,
-                "paid_amt":     safe_float(row[5]) if len(row) > 5 else 0.0,
-                "pending_amt":  safe_float(row[6]) if len(row) > 6 else 0.0,
+                "billed_amt":   safe_float(row[7]) if len(row) > 7 else 0.0,
+                "paid_amt":     safe_float(row[8]) if len(row) > 8 else 0.0,
+                "pending_amt":  safe_float(row[9]) if len(row) > 9 else 0.0,
             })
 
     return pd.DataFrame(rows)
