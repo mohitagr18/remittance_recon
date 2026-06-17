@@ -225,6 +225,90 @@ if not summary_df.empty:
         unsafe_allow_html=True,
     )
 
+
+# ── Copay monthly status banner (copay clients only) ──────────────────────────
+try:
+    from src.db.queries import copay_monthly_status, get_copay_table
+    _copay_clients_df   = get_copay_table(conn)
+    _copay_names        = set(_copay_clients_df["client_name"].str.upper().tolist()) if not _copay_clients_df.empty else set()
+    _is_copay_client    = selected.upper() in _copay_names
+
+    if _is_copay_client:
+        _copay_df      = copay_monthly_status(conn)
+        _client_copay  = _copay_df[_copay_df["client_name"].str.upper() == selected.upper()].copy()
+
+        if not _client_copay.empty:
+            _client_copay = _client_copay.sort_values(["yr", "mo"])
+
+            _TILE_STYLE = {
+                ("Good",      None):                ("✅", "#22c55e", "#0d2318", "Fully Paid"),
+                ("Good",      "Copay"):             ("💜", "#a78bfa", "#1e1535", "Copay"),
+                ("Follow up", "Exceeds Copay"):     ("🔴", "#ef4444", "#1f0d0d", "Exceeds Copay"),
+                ("Follow up", "Partial Copay"):     ("🔶", "#f97316", "#1f1208", "Partial Copay"),
+            }
+
+            def _month_tile(row):
+                key     = (row["copay_status"], row.get("copay_note"))
+                icon, color, bg, label = _TILE_STYLE.get(key, ("❓", "#8892a4", "#1e2130", row["copay_status"]))
+                pending = float(row.get("pending_dollars", 0) or 0)
+                billed  = float(row.get("total_billed_dollars", 0) or 0)
+                paid    = float(row.get("total_paid_dollars", 0) or 0)
+                copay_a = float(row.get("copay_amount", 0) or 0)
+                excess  = pending - copay_a if pending > copay_a + 1 else None
+                excess_str = (
+                    f'<div style="color:#ef4444;font-size:0.68rem;margin-top:3px;">+${excess:,.2f} excess</div>'
+                    if excess else ""
+                )
+                return (
+                    f'<div style="background:{bg};border:1px solid {color};border-radius:10px;'
+                    f'padding:12px 14px;min-width:160px;flex:0 0 auto;">'
+                    f'<div style="font-size:0.75rem;color:#8892a4;margin-bottom:4px;">{row["month_label"]}</div>'
+                    f'<div style="font-size:0.9rem;font-weight:700;color:{color};">{icon} {label}</div>'
+                    f'<div style="font-size:0.72rem;color:#c8cfe0;margin-top:6px;">Billed: <b>${billed:,.2f}</b></div>'
+                    f'<div style="font-size:0.72rem;color:#c8cfe0;">Paid: <b>${paid:,.2f}</b></div>'
+                    f'<div style="font-size:0.72rem;color:{color};font-weight:600;">Pending: ${pending:,.2f}</div>'
+                    f'<div style="font-size:0.68rem;color:#8892a4;margin-top:2px;">Copay: ${copay_a:,.2f}/mo</div>'
+                    f'{excess_str}</div>'
+                )
+
+            _copay_amount = float(_client_copay.iloc[0].get("copay_amount", 0) or 0)
+            _n_copay   = int((_client_copay["copay_note"] == "Copay").sum())
+            _n_full    = int((_client_copay["copay_note"].isna() & (_client_copay["copay_status"] == "Good")).sum())
+            _n_exceeds = int((_client_copay["copay_note"] == "Exceeds Copay").sum())
+            _n_partial = int((_client_copay["copay_note"] == "Partial Copay").sum())
+
+            _exceeds_badge = (
+                f"<span style='background:#1f0d0d;color:#ef4444;border:1px solid #ef4444;"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} Exceeds Copay ⚠️</span>"
+                if _n_exceeds > 0 else ""
+            )
+            _partial_badge = (
+                f"<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} Partial Copay</span>"
+                if _n_partial > 0 else ""
+            )
+
+            st.markdown(
+                f"""
+                <div style='margin-bottom:1rem;'>
+                    <div style='display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>
+                        <span style='font-size:1rem;font-weight:700;color:#a78bfa;'>💜 Copay Client</span>
+                        <span style='font-size:0.82rem;color:#8892a4;'>${_copay_amount:,.2f}/month</span>
+                        <span style='background:#1e1535;color:#a78bfa;border:1px solid #a78bfa;border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_copay} Copay months</span>
+                        <span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_full} Fully Paid</span>
+                        {_exceeds_badge}
+                        {_partial_badge}
+                    </div>
+                    <div style='display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;'>
+                        {"".join(_month_tile(row) for _, row in _client_copay.iterrows())}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+except Exception:
+    pass  # Never crash the ledger if copay data is unavailable
+
 # ── Weekly billed vs paid chart & pending hours chart ────────────────────────
 client_recon = queries.client_weekly_recon_with_dos(conn, selected, care_type=st.session_state.selected_care_type)
 

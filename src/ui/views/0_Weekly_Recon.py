@@ -26,6 +26,51 @@ inject_css()
 
 conn = _get_conn()
 
+# ── Copay monthly status lookup (cached per session) ──────────────────────────
+@st.cache_data(ttl=300)
+def _copay_status_map(_conn_id: int) -> dict:
+    """Returns {(client_name_upper, 'Mon YYYY'): (copay_status, copay_note, copay_amount)}"""
+    try:
+        from src.db.queries import copay_monthly_status
+        df = copay_monthly_status(conn)
+        result = {}
+        for _, row in df.iterrows():
+            key = (row["client_name"].upper(), row["month_label"])
+            result[key] = (row["copay_status"], row.get("copay_note"), row.get("copay_amount", 0))
+        return result
+    except Exception:
+        return {}
+
+_COPAY_MAP = _copay_status_map(id(conn))
+
+_COPAY_BADGE_CFG = {
+    ("Good",      "Copay"):         ("💜", "#a78bfa", "#1e1535"),
+    ("Good",      None):            ("✅", "#22c55e", "#0d2318"),
+    ("Follow up", "Exceeds Copay"): ("🔴", "#ef4444", "#1f0d0d"),
+    ("Follow up", "Partial Copay"): ("🔶", "#f97316", "#1f1208"),
+}
+
+def _copay_cell(client_name: str, week_start: str) -> str:
+    try:
+        import pandas as pd
+        mo_label = pd.to_datetime(week_start).strftime("%b %Y")
+    except Exception:
+        return "💜 COPAY"
+    key = (client_name.upper(), mo_label)
+    entry = _COPAY_MAP.get(key)
+    if entry is None:
+        return "💜 COPAY"
+    status, note, amt = entry
+    icon, color, bg = _COPAY_BADGE_CFG.get((status, note), ("💜", "#a78bfa", "#1e1535"))
+    label = note if note else ("Fully Paid" if status == "Good" else status)
+    amt_str = f" · ${amt:,.0f}/mo" if amt else ""
+    return (
+        f'<span style="background:{bg};color:{color};border:1px solid {color};'
+        f'border-radius:5px;padding:2px 8px;font-size:0.75rem;font-weight:600;white-space:nowrap;">'
+        f'{icon} {label}{amt_str}</span>'
+    )
+
+
 # ── Header ─────────────────────────────────────────────────────────────────
 st.markdown(
     """
@@ -186,14 +231,18 @@ def render_weekly_recon(care_type: str | None = None):
         "payroll_hours", "billed_hours", "paid_hours",
         "pending_hrs",
         "status", "reason",
-        "is_copay_client",
+        "copay_tag",
     ]
     show_cols = [c for c in show_cols if c in display.columns]
 
     # ── Status colour indicator column ─────────────────────────────────────────
     STATUS_ICON = {"Good": "✅", "Follow up": "⚠️", "No Payroll Hours": "⬜", "No Payroll Data": "⬜"}
     display["status"] = display["status"].map(lambda s: f"{STATUS_ICON.get(s, '')} {s}" if isinstance(s, str) else s)
-    display["is_copay_client"] = display["is_copay_client"].map(lambda x: "Yes" if x else "No")
+    def _build_copay_col(row):
+        if not row.get("is_copay_client", False):
+            return ""
+        return _copay_cell(str(row.get("client", "")), str(row.get("week_start", "")))
+    display["copay_tag"] = display.apply(_build_copay_col, axis=1)
 
     # ── Render table ────────────────────────────────────────────────────────────
     selection = st.dataframe(
@@ -210,7 +259,7 @@ def render_weekly_recon(care_type: str | None = None):
             "pending_hrs":       st.column_config.NumberColumn("⏳ Pending", format="%.1f"),
             "status":            st.column_config.TextColumn("Status",       width="small"),
             "reason":            st.column_config.TextColumn("Reason",       width="medium"),
-            "is_copay_client":   st.column_config.TextColumn("Copay",    width="small"),
+            "copay_tag":         st.column_config.HtmlColumn("Copay Status", width="medium"),
         },
         on_select="rerun",
         selection_mode="single-row",

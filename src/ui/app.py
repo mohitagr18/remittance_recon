@@ -20,7 +20,8 @@ client_ledger_page = st.Page("views/1_Client_Ledger.py", title="Client Ledger", 
 analyst_workbench_page = st.Page("views/2_Analyst_Workbench.py", title="Analyst Workbench", icon="🔧")
 ai_chat_page = st.Page("views/4_AI_Chat.py", title="AI Chat", icon="💬")
 
-tracker_page = st.Page("views/6_Skilled_Tracker.py", title="Skilled Billing Tracker", icon="📊")
+tracker_page       = st.Page("views/6_Skilled_Tracker.py", title="Skilled Billing Tracker", icon="📊")
+copay_manager_page = st.Page("views/7_Copay_Manager.py",   title="Copay Manager",           icon="💜")
 
 name_match_page = st.Page("views/3_Name_Match_Manager.py", title="Name Match Manager", icon="⚙️")
 data_management_page = st.Page("views/5_Data_Management.py", title="Data Management", icon="⚙️")
@@ -28,7 +29,7 @@ data_management_page = st.Page("views/5_Data_Management.py", title="Data Managem
 # Create navigation structure (hide default sidebar rendering)
 pg = st.navigation({
     "Main":     [dashboard_page, weekly_recon_page, client_ledger_page, analyst_workbench_page, ai_chat_page],
-    "Trackers": [tracker_page],
+    "Trackers": [tracker_page, copay_manager_page],
     "Admin":    [name_match_page, data_management_page]
 }, position="hidden")
 
@@ -54,6 +55,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Trackers**")
     st.page_link(tracker_page)
+    st.page_link(copay_manager_page)
 
 # 2. Run page (this will execute the page script, rendering its content & sidebar filters)
 pg.run()
