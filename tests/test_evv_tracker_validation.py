@@ -184,6 +184,7 @@ def _test_amounts(
                 WHERE client_name_combined = ?
                   AND first_dos BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
                   AND is_latest = TRUE
+                  AND transaction_type != 'Denial/Reversal'
             """, [rem_name, ws, we]).fetchone()[0])
         elif col == "paid_amt":
             db_val = float(conn.execute("""
@@ -192,6 +193,7 @@ def _test_amounts(
                 WHERE client_name_combined = ?
                   AND first_dos BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
                   AND is_latest = TRUE
+                  AND transaction_type != 'Denial/Reversal'
             """, [rem_name, ws, we]).fetchone()[0])
         else:  # pending
             row_db = conn.execute("""
@@ -200,6 +202,7 @@ def _test_amounts(
                 WHERE client_name_combined = ?
                   AND first_dos BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
                   AND is_latest = TRUE
+                  AND transaction_type != 'Denial/Reversal'
             """, [rem_name, ws, we]).fetchone()[0]
             db_val = float(row_db)
 
@@ -253,6 +256,7 @@ def test_week_totals(excel_df: pd.DataFrame, conn: duckdb.DuckDBPyConnection) ->
             SELECT COALESCE(SUM(charge_amount), 0) FROM remittance
             WHERE first_dos BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
               AND is_latest = TRUE
+              AND transaction_type != 'Denial/Reversal'
               AND client_name_combined IN (
                   SELECT DISTINCT remittance_name FROM skilled_tracker_clients WHERE is_active
               )
@@ -261,6 +265,7 @@ def test_week_totals(excel_df: pd.DataFrame, conn: duckdb.DuckDBPyConnection) ->
             SELECT COALESCE(SUM(payment_amount), 0) FROM remittance
             WHERE first_dos BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
               AND is_latest = TRUE
+              AND transaction_type != 'Denial/Reversal'
               AND client_name_combined IN (
                   SELECT DISTINCT remittance_name FROM skilled_tracker_clients WHERE is_active
               )
@@ -301,6 +306,7 @@ def test_month_totals(excel_df: pd.DataFrame, conn: duckdb.DuckDBPyConnection) -
             SELECT COALESCE(SUM(charge_amount), 0) FROM remittance
             WHERE DATE_PART('month', first_dos) = ? AND DATE_PART('year', first_dos) = ?
               AND is_latest = TRUE
+              AND transaction_type != 'Denial/Reversal'
               AND client_name_combined IN (
                   SELECT DISTINCT remittance_name FROM skilled_tracker_clients WHERE is_active
               )
@@ -309,6 +315,7 @@ def test_month_totals(excel_df: pd.DataFrame, conn: duckdb.DuckDBPyConnection) -
             SELECT COALESCE(SUM(payment_amount), 0) FROM remittance
             WHERE DATE_PART('month', first_dos) = ? AND DATE_PART('year', first_dos) = ?
               AND is_latest = TRUE
+              AND transaction_type != 'Denial/Reversal'
               AND client_name_combined IN (
                   SELECT DISTINCT remittance_name FROM skilled_tracker_clients WHERE is_active
               )
