@@ -167,12 +167,10 @@ CREATE TABLE IF NOT EXISTS skilled_tracker_clients (
     service_type    VARCHAR,
     remittance_name VARCHAR,
     is_active       BOOLEAN DEFAULT TRUE,
-    deactivated_from DATE DEFAULT NULL,  -- set to week_start when client is removed; hides from that week onwards
+    deactivated_from DATE DEFAULT NULL,
     added_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (display_name, bill_code)
 );
--- Migration: add deactivated_from if upgrading from older schema
-ALTER TABLE skilled_tracker_clients ADD COLUMN IF NOT EXISTS deactivated_from DATE DEFAULT NULL;
 
 CREATE TABLE IF NOT EXISTS skilled_tracker_comments (
     id              INTEGER PRIMARY KEY,
@@ -211,4 +209,6 @@ def create_all(conn: duckdb.DuckDBPyConnection) -> None:
         stmt = stmt.strip()
         if stmt:
             conn.execute(stmt)
+    # Migrations: add columns that didn't exist in older schema versions
+    conn.execute("ALTER TABLE skilled_tracker_clients ADD COLUMN IF NOT EXISTS deactivated_from DATE DEFAULT NULL")
     conn.commit()
