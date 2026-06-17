@@ -1,306 +1,258 @@
 """
 src/ui/views/7_Copay_Manager.py
-Copay Management & Monthly Reconciliation page.
+Copay Management & Reconciliation page.
 
 Two tabs:
-  1. Copay Management  — CRUD table to view/edit all copay clients and amounts
-  2. Monthly Copay Status — per-client × month pending vs copay with distinct highlights
+  1. Copay Status  — monthly pending vs copay per client, with distinct
+     purple "Copay Paid" highlight when pending ≈ copay_amount
+  2. Manage Copays — CRUD panel to update amounts and effective dates
 """
 from __future__ import annotations
 import streamlit as st
-import pandas as pd
 import duckdb
+import pandas as pd
 from pathlib import Path
 
-# ── DB connection ──────────────────────────────────────────────────────────────
-_DB_PATH = Path(__file__).parent.parent.parent.parent / "data" / "recon.duckdb"
+_DB = Path(__file__).parent.parent.parent.parent / "data" / "recon.duckdb"
 
 @st.cache_resource
-def _get_conn():
-    return duckdb.connect(str(_DB_PATH))
-
-conn = _get_conn()
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-COPAY_COLOR    = "#4fc3f7"   # light blue  — pending = copay (expected)
-EXCEED_COLOR   = "#ef5350"   # red         — pending exceeds copay
-PARTIAL_COLOR  = "#ffa726"   # amber       — partial copay
-PAID_COLOR     = "#66bb6a"   # green       — fully paid
-
-def _status_badge(status: str, note: str | None) -> str:
-    if note == "Copay":
-        return f'<span style="background:{COPAY_COLOR};color:#000;padding:2px 8px;border-radius:10px;font-size:0.8em;font-weight:600">✦ Copay</span>'
-    if note == "Exceeds Copay":
-        return f'<span style="background:{EXCEED_COLOR};color:#fff;padding:2px 8px;border-radius:10px;font-size:0.8em;font-weight:600">⚠ Exceeds Copay</span>'
-    if note == "Partial Copay":
-        return f'<span style="background:{PARTIAL_COLOR};color:#000;padding:2px 8px;border-radius:10px;font-size:0.8em;font-weight:600">⚡ Partial Copay</span>'
-    if status == "Good":
-        return f'<span style="background:{PAID_COLOR};color:#000;padding:2px 8px;border-radius:10px;font-size:0.8em;font-weight:600">✓ Paid in Full</span>'
-    return f'<span style="background:#bdbdbd;color:#000;padding:2px 8px;border-radius:10px;font-size:0.8em;font-weight:600">{status}</span>'
-
-# ── Page layout ────────────────────────────────────────────────────────────────
-
-st.title("💊 Copay Manager")
-st.caption("Manage client copay amounts and review monthly copay reconciliation status.")
-
-tab1, tab2 = st.tabs(["📋 Copay Management", "📅 Monthly Copay Status"])
+def _conn():
+    return duckdb.connect(str(_DB))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — COPAY MANAGEMENT
-# ══════════════════════════════════════════════════════════════════════════════
-with tab1:
-    st.subheader("Client Copay Amounts")
-    st.caption("Edit copay amounts and effective date ranges. Leave start/end dates blank if unknown.")
+# ── Business logic ─────────────────────────────────────────────────────────────
 
-    df = conn.execute("""
-        SELECT id, client_name, copay_amount, effective_from, effective_to, is_active
-        FROM copay_clients ORDER BY client_name
-    """).df()
+COPAY_TOL = 1.00
 
-    # Convert date columns for display
-    for col in ["effective_from", "effective_to"]:
-        df[col] = pd.to_datetime(df[col]).dt.date
-
-    edited = st.data_editor(
-        df,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-            "client_name": st.column_config.TextColumn("Client Name", width="large"),
-            "copay_amount": st.column_config.NumberColumn(
-                "Monthly Copay ($)", format="$%.2f", min_value=0.0, step=0.01
-            ),
-            "effective_from": st.column_config.DateColumn("Copay Start Date", format="MM/DD/YYYY"),
-            "effective_to":   st.column_config.DateColumn("Copay End Date",   format="MM/DD/YYYY"),
-            "is_active": st.column_config.CheckboxColumn("Active"),
-        },
-        hide_index=True,
-        key="copay_editor",
-    )
-
-    if st.button("💾 Save Changes", type="primary"):
-        saved = 0
-        errors = []
-        for _, row in edited.iterrows():
-            try:
-                eff_from = str(row["effective_from"]) if pd.notna(row["effective_from"]) and row["effective_from"] else None
-                eff_to   = str(row["effective_to"])   if pd.notna(row["effective_to"])   and row["effective_to"]   else None
-                conn.execute("""
-                    UPDATE copay_clients
-                    SET copay_amount   = ?,
-                        effective_from = CAST(? AS DATE),
-                        effective_to   = CAST(? AS DATE),
-                        is_active      = ?,
-                        updated_at     = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, [float(row["copay_amount"]) if pd.notna(row["copay_amount"]) else None,
-                      eff_from, eff_to, bool(row["is_active"]), int(row["id"])])
-                saved += 1
-            except Exception as e:
-                errors.append(f"{row['client_name']}: {e}")
-        conn.commit()
-        if errors:
-            st.error("\n".join(errors))
-        else:
-            st.success(f"✅ Saved {saved} client records.")
-            st.cache_resource.clear()
-            st.rerun()
-
-    st.divider()
-    st.subheader("➕ Add New Copay Client")
-    with st.form("add_copay_client"):
-        col1, col2 = st.columns(2)
-        new_name   = col1.text_input("Client Name (LAST, FIRST format)")
-        new_amount = col2.number_input("Monthly Copay ($)", min_value=0.0, step=0.01, format="%.2f")
-        col3, col4 = st.columns(2)
-        new_from   = col3.date_input("Copay Start Date", value=None)
-        new_to     = col4.date_input("Copay End Date",   value=None)
-        submitted  = st.form_submit_button("Add Client")
-        if submitted:
-            if not new_name.strip():
-                st.error("Client name is required.")
-            else:
-                max_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM copay_clients").fetchone()[0]
-                conn.execute("""
-                    INSERT INTO copay_clients
-                        (id, client_name, is_active, copay_amount, effective_from, effective_to, updated_at)
-                    VALUES (?, ?, TRUE, ?, CAST(? AS DATE), CAST(? AS DATE), CURRENT_TIMESTAMP)
-                """, [max_id + 1, new_name.strip().upper(),
-                      float(new_amount),
-                      str(new_from) if new_from else None,
-                      str(new_to)   if new_to   else None])
-                conn.commit()
-                st.success(f"✅ Added {new_name.upper()} with copay ${new_amount:.2f}")
-                st.rerun()
+STATUS_CONFIG = {
+    "Copay Paid":    {"icon": "💜", "color": "#a78bfa", "bg": "#1e1535"},
+    "Fully Paid":    {"icon": "✅", "color": "#22c55e", "bg": "#0d2318"},
+    "Exceeds Copay": {"icon": "⚠️",  "color": "#f59e0b", "bg": "#1f1a0d"},
+    "Partial Copay": {"icon": "🔶", "color": "#f97316", "bg": "#1f1208"},
+    "Follow Up":     {"icon": "🔴", "color": "#ef4444", "bg": "#1f0d0d"},
+}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — MONTHLY COPAY STATUS
-# ══════════════════════════════════════════════════════════════════════════════
-with tab2:
-    st.subheader("Monthly Copay Reconciliation")
-    st.caption(
-        "Pending dollars per client per month are compared against their monthly copay. "
-        "A **✦ Copay** badge means pending = copay — this is expected and not a problem."
-    )
+def _status(pending: float, copay: float) -> str:
+    if abs(pending) <= COPAY_TOL:
+        return "Fully Paid"
+    if abs(pending - copay) <= COPAY_TOL:
+        return "Copay Paid"
+    if pending > copay + COPAY_TOL:
+        return "Exceeds Copay"
+    if 0 < pending < copay - COPAY_TOL:
+        return "Partial Copay"
+    return "Follow Up"
 
-    # Legend
-    st.markdown(
-        f'''
-        <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
-          <div>{_status_badge("Good","Copay")} &nbsp;Pending ≈ monthly copay (expected)</div>
-          <div>{_status_badge("Good", None)} &nbsp;Fully paid including copay</div>
-          <div>{_status_badge("Follow up","Exceeds Copay")} &nbsp;Pending beyond copay — review</div>
-          <div>{_status_badge("Follow up","Partial Copay")} &nbsp;Underpaid relative to copay</div>
-        </div>
-        ''',
-        unsafe_allow_html=True,
-    )
 
-    # Filters
-    fcol1, fcol2, fcol3 = st.columns(3)
-    all_years  = conn.execute("SELECT DISTINCT DATE_PART('year', week_start_date)::INT AS yr FROM reconciliation ORDER BY yr DESC").df()["yr"].tolist()
-    all_months = list(range(1, 13))
-    month_names = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
+# ── Data loaders ───────────────────────────────────────────────────────────────
 
-    sel_year   = fcol1.selectbox("Year",  options=[None] + all_years, format_func=lambda x: "All" if x is None else str(x))
-    sel_month  = fcol2.selectbox("Month", options=[None] + all_months, format_func=lambda x: "All" if x is None else month_names[x])
-    sel_client = fcol3.selectbox("Client", options=["All"] + sorted(conn.execute("SELECT client_name FROM copay_clients WHERE is_active ORDER BY client_name").df()["client_name"].tolist()))
-
-    # Pull data — using inline SQL since copay_monthly_status query uses dollar estimation
-    month_filter = ""
-    if sel_year:
-        month_filter += f" AND DATE_PART('year', r.week_start_date) = {sel_year}"
-    if sel_month:
-        month_filter += f" AND DATE_PART('month', r.week_start_date) = {sel_month}"
-
-    status_df = conn.execute(f"""
-        WITH copay_active AS (
-            SELECT client_name, copay_amount, effective_from, effective_to
+def _load_status() -> pd.DataFrame:
+    sql = """
+        WITH cc AS (
+            SELECT id, client_name, copay_amount
             FROM copay_clients
             WHERE is_active = TRUE AND copay_amount IS NOT NULL
         ),
-        recon_monthly AS (
+        monthly AS (
             SELECT
-                r.client_name_payroll                             AS client_name,
-                DATE_PART('year',  r.week_start_date)::INT       AS yr,
-                DATE_PART('month', r.week_start_date)::INT       AS mo,
-                SUM(r.billed_hours)                               AS billed_hrs,
-                SUM(r.paid_hours)                                 AS paid_hrs,
-                SUM(GREATEST(COALESCE(r.payroll_hours,0) - COALESCE(r.paid_hours,0), 0)) AS pending_hrs
+                r.client_name_payroll                           AS client_name,
+                cc.copay_amount,
+                DATE_PART('year',  r.week_start_date)::INT     AS yr,
+                DATE_PART('month', r.week_start_date)::INT     AS mo,
+                STRFTIME(MAKE_DATE(
+                    DATE_PART('year',  r.week_start_date)::INT,
+                    DATE_PART('month', r.week_start_date)::INT, 1
+                ), '%b %Y')                                     AS month_label,
+                ROUND(COALESCE(SUM(rem.charge_amount),   0), 2) AS total_billed,
+                ROUND(COALESCE(SUM(rem.payment_amount),  0), 2) AS total_paid
             FROM reconciliation r
-            WHERE r.client_name_payroll IN (SELECT client_name FROM copay_active)
-            {month_filter}
-            GROUP BY r.client_name_payroll, yr, mo
-        ),
-        remit_monthly AS (
-            SELECT
-                UPPER(client_name_combined)   AS client_name_upper,
-                DATE_PART('year',  first_dos)::INT  AS yr,
-                DATE_PART('month', first_dos)::INT  AS mo,
-                SUM(charge_amount)            AS total_billed_dollars,
-                SUM(payment_amount)           AS total_paid_dollars
-            FROM remittance
-            WHERE is_latest = TRUE
-            GROUP BY client_name_upper, yr, mo
-        ),
-        combined AS (
-            SELECT
-                rm.client_name,
-                ca.copay_amount,
-                rm.yr,
-                rm.mo,
-                STRFTIME(MAKE_DATE(rm.yr, rm.mo, 1), '%b %Y') AS month_label,
-                ROUND(COALESCE(rem.total_billed_dollars, 0), 2) AS billed_dollars,
-                ROUND(COALESCE(rem.total_paid_dollars,   0), 2) AS paid_dollars,
-                ROUND(COALESCE(rem.total_billed_dollars, 0) - COALESCE(rem.total_paid_dollars, 0), 2) AS pending_dollars
-            FROM recon_monthly rm
-            JOIN copay_active ca ON UPPER(ca.client_name) = UPPER(rm.client_name)
-            LEFT JOIN remit_monthly rem
-              ON UPPER(rem.client_name_upper) LIKE '%' || SPLIT_PART(UPPER(rm.client_name), ',', 1) || '%'
-             AND rem.yr = rm.yr AND rem.mo = rm.mo
+            JOIN cc ON UPPER(cc.client_name) = UPPER(r.client_name_payroll)
+            LEFT JOIN remittance rem
+                ON UPPER(rem.client_name_combined) = UPPER(r.client_name_payroll)
+               AND rem.is_latest = TRUE
+               AND DATE_PART('year',  rem.first_dos)::INT = DATE_PART('year',  r.week_start_date)::INT
+               AND DATE_PART('month', rem.first_dos)::INT = DATE_PART('month', r.week_start_date)::INT
+            GROUP BY r.client_name_payroll, cc.copay_amount,
+                     DATE_PART('year',  r.week_start_date)::INT,
+                     DATE_PART('month', r.week_start_date)::INT
         )
         SELECT
-            client_name,
-            copay_amount,
-            month_label,
-            yr,
-            mo,
-            billed_dollars,
-            paid_dollars,
-            pending_dollars,
-            CASE
-                WHEN ABS(pending_dollars) <= 1.00                        THEN 'Good'
-                WHEN ABS(pending_dollars - copay_amount) <= 1.00         THEN 'Good'
-                WHEN pending_dollars > copay_amount + 1.00               THEN 'Follow up'
-                WHEN pending_dollars > 1.00 AND pending_dollars < copay_amount - 1.00 THEN 'Follow up'
-                ELSE 'Good'
-            END AS copay_status,
-            CASE
-                WHEN ABS(pending_dollars) <= 1.00                        THEN NULL
-                WHEN ABS(pending_dollars - copay_amount) <= 1.00         THEN 'Copay'
-                WHEN pending_dollars > copay_amount + 1.00               THEN 'Exceeds Copay'
-                WHEN pending_dollars > 1.00 AND pending_dollars < copay_amount - 1.00 THEN 'Partial Copay'
-                ELSE NULL
-            END AS copay_note
-        FROM combined
-        {"WHERE UPPER(client_name) = UPPER('" + sel_client + "')" if sel_client != "All" else ""}
+            client_name, copay_amount, month_label, yr, mo,
+            total_billed, total_paid,
+            ROUND(total_billed - total_paid, 2) AS pending
+        FROM monthly
         ORDER BY client_name, yr, mo
+    """
+    return _conn().execute(sql).df()
+
+
+def _load_clients() -> pd.DataFrame:
+    return _conn().execute("""
+        SELECT id, client_name, copay_amount, effective_from, effective_to, is_active, updated_at
+        FROM copay_clients ORDER BY client_name
     """).df()
 
-    if status_df.empty:
-        st.info("No copay data found for the selected filters.")
-    else:
-        # Build HTML table with badges
-        rows_html = ""
-        for _, row in status_df.iterrows():
-            badge = _status_badge(row["copay_status"], row["copay_note"])
-            pending_color = ""
-            if row["copay_note"] == "Copay":
-                pending_color = f'color:{COPAY_COLOR};font-weight:700'
-            elif row["copay_note"] == "Exceeds Copay":
-                pending_color = f'color:{EXCEED_COLOR};font-weight:700'
-            elif row["copay_note"] == "Partial Copay":
-                pending_color = f'color:{PARTIAL_COLOR};font-weight:700'
-            elif row["copay_status"] == "Good" and not row["copay_note"]:
-                pending_color = f'color:{PAID_COLOR};font-weight:700'
 
-            rows_html += f"""
-            <tr>
-              <td>{row["client_name"]}</td>
-              <td style="text-align:right">${row["copay_amount"]:,.2f}</td>
-              <td>{row["month_label"]}</td>
-              <td style="text-align:right">${row["billed_dollars"]:,.2f}</td>
-              <td style="text-align:right">${row["paid_dollars"]:,.2f}</td>
-              <td style="text-align:right;{pending_color}">${row["pending_dollars"]:,.2f}</td>
-              <td style="text-align:center">{badge}</td>
-            </tr>"""
+# ── HTML helpers ───────────────────────────────────────────────────────────────
 
-        html = f"""
-        <style>
-          .copay-table {{ width:100%;border-collapse:collapse;font-size:0.87em }}
-          .copay-table th {{ background:#263044;color:#cdd6f4;padding:8px 12px;text-align:left;border-bottom:2px solid #45475a }}
-          .copay-table td {{ padding:6px 12px;border-bottom:1px solid #313244;vertical-align:middle }}
-          .copay-table tr:hover td {{ background:#1e2130 }}
-        </style>
-        <table class="copay-table">
-          <thead><tr>
-            <th>Client</th><th style="text-align:right">Monthly Copay</th><th>Month</th>
-            <th style="text-align:right">Billed $</th><th style="text-align:right">Paid $</th>
-            <th style="text-align:right">Pending $</th><th style="text-align:center">Status</th>
-          </tr></thead>
-          <tbody>{rows_html}</tbody>
-        </table>
-        """
-        st.markdown(html, unsafe_allow_html=True)
+def _badge(label: str) -> str:
+    cfg = STATUS_CONFIG.get(label, {"icon": "❓", "color": "#8892a4", "bg": "#1e2130"})
+    return (
+        f'<span style="background:{cfg["bg"]};color:{cfg["color"]};'
+        f'border:1px solid {cfg["color"]};border-radius:6px;'
+        f'padding:2px 10px;font-size:0.8rem;font-weight:600;white-space:nowrap;">'
+        f'{cfg["icon"]} {label}</span>'
+    )
 
-        # Summary metrics
-        st.divider()
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Clients", status_df["client_name"].nunique())
-        m2.metric("✦ Copay (Expected)",   int((status_df["copay_note"] == "Copay").sum()))
-        m3.metric("⚠ Exceeds Copay",      int((status_df["copay_note"] == "Exceeds Copay").sum()))
-        m4.metric("✓ Paid in Full",        int((status_df["copay_status"] == "Good") & (status_df["copay_note"].isna()).sum()))
+
+def _row_html(row: pd.Series) -> str:
+    status = _status(row["pending"], row["copay_amount"])
+    cfg    = STATUS_CONFIG.get(status, {"color": "#8892a4", "bg": "#1e2130"})
+    is_copay = (status == "Copay Paid")
+    border = f'2px solid {cfg["color"]}' if is_copay else '1px solid #2a2d3e'
+    bg     = cfg["bg"] if is_copay else "#1e2130"
+    glow   = f'box-shadow:0 0 12px {cfg["color"]}44;' if is_copay else ''
+    return (
+        f'<div style="background:{bg};border:{border};{glow}border-radius:10px;'
+        f'padding:12px 18px;margin-bottom:8px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;">'
+        f'<div style="min-width:200px;font-weight:600;color:#e8eaf0;">{row["client_name"]}</div>'
+        f'<div style="min-width:80px;color:#8892a4;font-size:0.85rem;">{row["month_label"]}</div>'
+        f'<div style="min-width:100px;color:#c8cfe0;">Billed: <b>${row["total_billed"]:,.2f}</b></div>'
+        f'<div style="min-width:100px;color:#c8cfe0;">Paid: <b>${row["total_paid"]:,.2f}</b></div>'
+        f'<div style="min-width:100px;color:#c8cfe0;">Pending: <b>${row["pending"]:,.2f}</b></div>'
+        f'<div style="min-width:100px;color:#8892a4;font-size:0.8rem;">Copay: ${row["copay_amount"]:,.2f}/mo</div>'
+        f'<div>{_badge(status)}</div>'
+        f'</div>'
+    )
+
+
+# ── Page ───────────────────────────────────────────────────────────────────────
+
+def main():
+    from src.ui.styles.theme import inject_css
+    inject_css()
+
+    st.title("💜 Copay Manager")
+    st.caption("Monthly copay reconciliation — pending ≈ copay means the client owes their share and is shown in purple.")
+
+    tab1, tab2 = st.tabs(["📊 Copay Status", "⚙️ Manage Copays"])
+
+    # ── Tab 1: Status view ─────────────────────────────────────────────────────
+    with tab1:
+        df = _load_status()
+
+        if df.empty:
+            st.info("No copay data found. Ensure copay_clients has amounts and reconciliation data exists.")
+            return
+
+        df["status"] = df.apply(lambda r: _status(r["pending"], r["copay_amount"]), axis=1)
+
+        # KPI summary row
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Total Client-Months", len(df))
+        k2.metric("💜 Copay Paid",   int((df["status"] == "Copay Paid").sum()),
+                  help="Pending ≈ monthly copay — expected and correct")
+        k3.metric("✅ Fully Paid",   int((df["status"] == "Fully Paid").sum()),
+                  help="Pending = $0")
+        k4.metric("⚠️ Needs Review", int(df["status"].isin(["Exceeds Copay","Partial Copay","Follow Up"]).sum()),
+                  help="Exceeds copay or partial underpayment")
+
+        st.markdown("---")
+
+        # Legend
+        st.markdown(
+            '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:1rem;">' +
+            ' '.join(_badge(s) for s in STATUS_CONFIG) +
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        # Filters
+        c1, c2, c3 = st.columns([2, 2, 1])
+        sel_client = c1.selectbox("Client", ["All"] + sorted(df["client_name"].unique().tolist()))
+        month_opts = sorted(df["month_label"].unique().tolist(),
+                            key=lambda x: (int(x.split()[1]),
+                                           ["Jan","Feb","Mar","Apr","May","Jun",
+                                            "Jul","Aug","Sep","Oct","Nov","Dec"].index(x.split()[0])))
+        sel_month  = c2.selectbox("Month", ["All"] + month_opts)
+        copay_only = c3.checkbox("Copay only", value=False)
+
+        fdf = df.copy()
+        if sel_client != "All":
+            fdf = fdf[fdf["client_name"] == sel_client]
+        if sel_month != "All":
+            fdf = fdf[fdf["month_label"] == sel_month]
+        if copay_only:
+            fdf = fdf[fdf["status"] == "Copay Paid"]
+
+        st.markdown(f"**{len(fdf)} records**")
+        st.markdown("".join(_row_html(r) for _, r in fdf.iterrows()), unsafe_allow_html=True)
+
+    # ── Tab 2: Manage copay amounts & dates ────────────────────────────────────
+    with tab2:
+        st.subheader("Copay Client Management")
+        st.caption("Update monthly copay amounts and effective date ranges. Leave dates blank if unknown.")
+
+        clients_df = _load_clients()
+
+        for _, row in clients_df.iterrows():
+            amt_label = f"${row['copay_amount']:,.2f}/mo" if pd.notna(row['copay_amount']) else "(no amount)"
+            with st.expander(f"**{row['client_name']}** — {amt_label}"):
+                with st.form(key=f"form_{row['id']}"):
+                    c1, c2, c3 = st.columns(3)
+                    new_amt = c1.number_input(
+                        "Monthly Copay ($)", min_value=0.0, step=0.01, format="%.2f",
+                        value=float(row["copay_amount"]) if pd.notna(row["copay_amount"]) else 0.0,
+                    )
+                    eff_from = c2.date_input(
+                        "Effective From",
+                        value=pd.to_datetime(row["effective_from"]).date() if pd.notna(row["effective_from"]) else None,
+                    )
+                    eff_to = c3.date_input(
+                        "Effective To",
+                        value=pd.to_datetime(row["effective_to"]).date() if pd.notna(row["effective_to"]) else None,
+                    )
+                    active = st.checkbox("Active", value=bool(row["is_active"]))
+                    if st.form_submit_button("💾 Save"):
+                        _conn().execute("""
+                            UPDATE copay_clients
+                            SET copay_amount   = ?,
+                                effective_from = CAST(? AS DATE),
+                                effective_to   = CAST(? AS DATE),
+                                is_active      = ?,
+                                updated_at     = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, [new_amt,
+                              str(eff_from) if eff_from else None,
+                              str(eff_to)   if eff_to   else None,
+                              active, int(row["id"])])
+                        st.success(f"✅ Saved {row['client_name']} — ${new_amt:,.2f}/mo")
+                        st.rerun()
+
+        st.markdown("---")
+        st.subheader("➕ Add New Copay Client")
+        with st.form("add_new"):
+            a1, a2 = st.columns(2)
+            new_name  = a1.text_input("Client Name (LAST, FIRST format)")
+            new_copay = a2.number_input("Monthly Copay ($)", min_value=0.0, step=0.01, format="%.2f")
+            b1, b2    = st.columns(2)
+            nf = b1.date_input("Effective From", value=None)
+            nt = b2.date_input("Effective To",   value=None)
+            if st.form_submit_button("➕ Add"):
+                if new_name.strip():
+                    max_id = _conn().execute("SELECT COALESCE(MAX(id),0) FROM copay_clients").fetchone()[0]
+                    _conn().execute("""
+                        INSERT INTO copay_clients
+                            (id, client_name, is_active, copay_amount, effective_from, effective_to, updated_at)
+                        VALUES (?, ?, TRUE, ?, CAST(? AS DATE), CAST(? AS DATE), CURRENT_TIMESTAMP)
+                    """, [max_id + 1, new_name.strip().upper(), new_copay,
+                          str(nf) if nf else None, str(nt) if nt else None])
+                    st.success(f"✅ Added {new_name.strip().upper()} — ${new_copay:,.2f}/mo")
+                    st.rerun()
+                else:
+                    st.error("Client name is required.")
+
+
+if __name__ == "__main__":
+    main()
