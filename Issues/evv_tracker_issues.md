@@ -259,3 +259,109 @@ can explain.
 6. **MASSENBURG, KATHERINE** — Isolated months (Nov 2025, Feb 2026) with moderate excess.
    Likely one-off claim adjustments rather than systemic. Monitor.
 
+
+---
+
+## Copay Reconciliation Analysis (Investigated 2026-06-17)
+
+Copay amounts were loaded from a whiteboard photo into `copay_clients` for 14 active unskilled clients. Monthly pending dollars were then compared against each client's copay amount across all available remittance history. Three distinct scenarios were identified and are documented below with real examples from the DB.
+
+---
+
+### Copay Scenario Definitions
+
+| Scenario | Condition | Status Label | Action |
+|---|---|---|---|
+| **Fully Paid** | pending ≈ $0 (±$1) | Fully Paid | None — payer covered everything including copay share |
+| **Copay Pending** | pending ≈ copay_amount (±$1) | Copay | None — payer paid their share, client owes their monthly copay |
+| **Exceeds Copay** | pending > copay_amount + $1 | Exceeds Copay | Review — something beyond the copay is unpaid |
+| **Partial Copay** | 0 < pending < copay_amount − $1 | Partial Copay | Review — underpaid even relative to copay |
+
+---
+
+### Scenario 1 — Fully Paid (copay client, $0 pending)
+
+**Example: COCHRAN, TELEECA — Copay $144.41**
+
+Jul 2025 through May 2026 (every month): billed ~$2,164–$3,601, paid the exact same amount, pending = **$0.00**. The payer covered 100% including what would have been the copay share. No action needed. The COPAY tag should still appear in the UI so the analyst knows this is a copay client — but the status reads as clean.
+
+---
+
+### Scenario 2 — Copay Pending (expected remainder, no action needed)
+
+**Example: BERRYMAN, SHELIAH — Copay $383.00**
+
+Jan 2026, Feb 2026, Mar 2026 (and multiple prior months): billed ~$4,500–$6,700, payer paid exactly billed minus $383.00, leaving pending = **$383.00** to the penny. This is the textbook copay scenario — the payer did its job, the client owes their monthly share. Currently this shows as **Follow Up / Paid Less** in the weekly recon, which is incorrect. The UI and reconciliation logic must suppress the Follow Up classification for these rows and surface a **COPAY** status instead.
+
+Other consistent Scenario 2 clients:
+- **BUTLER, JANNIE** ($643.59) — May, Jul, Aug, Sep, Oct, Nov, Dec 2025 + Jan, Feb, Mar, Apr 2026
+- **JARRETT, VICTORIA** ($19.00) — Aug, Sep 2025 + Jan, Apr, May 2026
+- **RICHEY, MICHAH** ($749.00) — multiple months (confirm from full data)
+- **CLAIBORNE, GEORGE** ($535.00) — Jun 2025, Apr 2026, May 2026
+
+---
+
+### Scenario 3 — Exceeds Copay (copay applied but excess still pending)
+
+34 client-month instances found across 8 clients. Full list:
+
+| Client | Month | Billed | Paid | Pending | Copay | Excess | Severity |
+|---|---|---:|---:|---:|---:|---:|---|
+| BERRYMAN, SHELIAH | Jun 2025 | 4,973.50 | 4,574.50 | 399.00 | 383.00 | **16.00** | Low |
+| BERRYMAN, SHELIAH | Jul 2025 | 1,598.17 | -770.11 | 2,368.28 | 383.00 | **1,985.28** | 🔴 High — reversal |
+| BERRYMAN, SHELIAH | Nov 2025 | 8,678.67 | 5,301.63 | 3,377.04 | 383.00 | **2,994.04** | 🔴 High |
+| BERRYMAN, SHELIAH | Apr 2026 | 5,401.41 | 4,532.89 | 868.52 | 383.00 | **485.52** | 🟡 Medium |
+| BERRYMAN, SHELIAH | May 2026 | 3,459.33 | 0.00 | 3,459.33 | 383.00 | **3,076.33** | 🔴 High — $0 paid |
+| BUTLER, JANNIE | Jun 2025 | 4,778.40 | 4,115.61 | 662.79 | 643.59 | **19.20** | Low |
+| BUTTS, SHIRLEY | Jun 2025 | 2,207.13 | 2,048.13 | 159.00 | 153.00 | **6.00** | Low |
+| BUTTS, SHIRLEY | Jul 2025 | 4,248.30 | 2,144.38 | 2,103.92 | 153.00 | **1,950.92** | 🔴 High |
+| BUTTS, SHIRLEY | Aug 2025 | 5,259.80 | 4,551.75 | 708.05 | 153.00 | **555.05** | 🟡 Medium |
+| BUTTS, SHIRLEY | Oct 2025–May 2026 (8 months) | — | — | 156.00/mo | 153.00 | **3.00/mo** | ⚠️ See note |
+| JARRETT, VICTORIA | Apr 2025 | 6,980.16 | 0.00 | 6,980.16 | 19.00 | **6,961.16** | 🔴 High — $0 paid |
+| JARRETT, VICTORIA | May 2025 | 9,835.68 | 0.00 | 9,835.68 | 19.00 | **9,816.68** | 🔴 High — $0 paid |
+| JARRETT, VICTORIA | Jun 2025 | 6,364.80 | 3,172.80 | 3,192.00 | 19.00 | **3,173.00** | 🔴 High |
+| JARRETT, VICTORIA | Oct 2025 | 2,913.12 | 2,468.06 | 445.06 | 19.00 | **426.06** | 🟡 Medium |
+| JARRETT, VICTORIA | Nov 2025 | 1,942.08 | 1,660.09 | 281.99 | 19.00 | **262.99** | 🟡 Medium |
+| JARRETT, VICTORIA | Dec 2025 | 3,398.64 | 2,994.04 | 404.60 | 19.00 | **385.60** | 🟡 Medium |
+| JARRETT, VICTORIA | Feb 2026 | 4,470.83 | 4,168.61 | 302.22 | 19.00 | **283.22** | 🟡 Medium |
+| JARRETT, VICTORIA | Mar 2026 | 4,491.06 | 4,229.30 | 261.76 | 19.00 | **242.76** | 🟡 Medium |
+| MASSENBURG, KATHERINE | Nov 2025 | 5,623.94 | 5,079.38 | 544.56 | 397.26 | **147.30** | 🟡 Medium |
+| MASSENBURG, KATHERINE | Feb 2026 | 4,875.43 | 4,391.56 | 483.87 | 397.26 | **86.61** | Low |
+| PARKER, NORMA | Jun 2025 | 4,181.10 | 3,697.30 | 483.80 | 478.00 | **5.80** | Low |
+| PEEBLES, LUCY | Mar 2026 | 2,427.60 | 161.84 | 2,265.76 | 174.14 | **2,091.62** | 🔴 High — new client |
+| PEEBLES, LUCY | Apr 2026 | 1,739.78 | 647.36 | 1,092.42 | 174.14 | **918.28** | 🔴 High — new client |
+| TOWERS, LINDA | Apr 2025 | 3,053.82 | 1,639.86 | 1,413.96 | 1,176.00 | **237.96** | 🟡 Medium |
+| TOWERS, LINDA | May 2025 | 3,429.96 | 2,220.96 | 1,209.00 | 1,176.00 | **33.00** | Low |
+| TOWERS, LINDA | Feb 2026 | 4,207.84 | 2,829.54 | 1,378.30 | 1,176.00 | **202.30** | 🟡 Medium |
+| TOWERS, LINDA | Mar 2026 | 3,439.10 | 2,060.80 | 1,378.30 | 1,176.00 | **202.30** | 🟡 Medium |
+
+#### Client-Specific Notes
+
+1. **BUTTS, SHIRLEY — Possible incorrect copay amount stored**
+   Oct 2025–May 2026 (8 consecutive months): pending = **$156.00** every month vs stored copay of $153.00. The $3.00 excess is perfectly consistent across 8 months — almost certainly the actual copay is **$156.00**, not $153.00. Recommend confirming with billing team and updating the DB.
+
+2. **JARRETT, VICTORIA — Apr/May 2025: $0 paid on $6,980–$9,836 billed**
+   Two consecutive months with zero payment. Likely a prior auth gap, insurance switch, or credentialing issue during that period. Oct 2025–Mar 2026 show persistent moderate excess ($242–$426) — may be a rate change not reflected in the system.
+
+3. **BERRYMAN, SHELIAH — Jul 2025 reversal**
+   Paid was **-$770.11** (negative) due to a clawback, sending pending to $2,368. Nov 2025 and May 2026 show $0 or near-$0 paid on large billed amounts — needs claim-level review.
+
+4. **PEEBLES, LUCY — New client, very low payments Mar–Apr 2026**
+   Only 2 months of data, both showing very low payments ($161 and $647 on ~$1,700–$2,400 billed). Likely still in prior auth processing or initial credentialing. Monitor.
+
+5. **TOWERS, LINDA — Feb–Mar 2026 consistent $202.30 excess**
+   Same excess both months ($1,378.30 pending vs $1,176.00 copay). Consistent pattern suggests a rate change or additional service added that the copay amount doesn't cover. Confirm with billing team.
+
+6. **MASSENBURG, KATHERINE — Isolated months, low excess**
+   Nov 2025 ($147 excess) and Feb 2026 ($87 excess) — likely one-off claim adjustments. Monitor but not urgent.
+
+---
+
+### Action Items from Copay Analysis
+
+1. **Confirm BUTTS, SHIRLEY copay amount** — stored as $153.00 but 8 months of data show $156.00 consistently. Update DB if confirmed.
+2. **Investigate JARRETT, VICTORIA** Apr–May 2025 ($0 paid) and Oct 2025–Mar 2026 persistent excess.
+3. **Investigate BERRYMAN, SHELIAH** Jul 2025 reversal and Nov 2025/May 2026 $0-paid months.
+4. **Monitor PEEBLES, LUCY** — new client, payments not yet established.
+5. **Confirm TOWERS, LINDA** rate with billing team for Feb–Mar 2026.
+6. **UI implementation pending** — weekly recon and client ledger need COPAY tag + monthly status banner. Copay Manager page built (commit `6716e72`).
