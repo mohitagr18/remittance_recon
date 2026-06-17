@@ -183,22 +183,61 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
         row = df.iloc[idx]
         _render_comments(conn, row["display_name"], row["bill_code"], week_label, sel_key=sel_key)
 
-    # Add new client row
-    with st.expander("➕ Add Client Row"):
-        with st.form(key=f"add_client_{month_idx}_{ws}_{we}"):
-            c1, c2, c3 = st.columns(3)
-            new_name = c1.text_input("Display Name (e.g. SMITH, JOHN LPN)")
-            new_code = c2.text_input("Bill Code (e.g. T1003)")
-            new_svc  = c3.selectbox("Service Type", ["LPN", "RN", "Respite", "Other"])
-            new_rem  = st.text_input("Remittance Name (as it appears in remittance file, optional)")
-            if st.form_submit_button("Add Row"):
-                if new_name.strip() and new_code.strip():
-                    Q.add_tracker_client(conn, new_name.strip(), new_code.strip(),
-                                         new_svc, new_rem.strip() or None)
-                    st.success(f"Added {new_name} / {new_code}. Appears in all future weeks.")
-                    st.rerun()
-                else:
-                    st.warning("Display name and bill code are required.")
+    # ── Manage clients ────────────────────────────────────────────────────────
+    with st.expander("⚙️ Manage Clients"):
+        add_tab, remove_tab, restore_tab = st.tabs(["➕ Add Client", "🗑 Remove Client", "↩️ Restore Client"])
+
+        with add_tab:
+            with st.form(key=f"add_client_{month_idx}_{ws}_{we}"):
+                c1, c2, c3 = st.columns(3)
+                new_name = c1.text_input("Display Name (e.g. SMITH, JOHN LPN)")
+                new_code = c2.text_input("Bill Code (e.g. T1003)")
+                new_svc  = c3.selectbox("Service Type", ["LPN", "RN", "Respite", "Other"])
+                new_rem  = st.text_input("Remittance Name (as it appears in remittance file, optional)")
+                if st.form_submit_button("Add Row"):
+                    if new_name.strip() and new_code.strip():
+                        Q.add_tracker_client(conn, new_name.strip(), new_code.strip(),
+                                             new_svc, new_rem.strip() or None)
+                        st.success(f"Added {new_name} / {new_code}. Appears from this week onwards.")
+                        st.rerun()
+                    else:
+                        st.warning("Display name and bill code are required.")
+
+        with remove_tab:
+            all_clients = Q.get_all_tracker_clients(conn)
+            active = all_clients[all_clients["is_active"] == True]
+            if active.empty:
+                st.info("No active clients to remove.")
+            else:
+                opts = (active["display_name"] + " (" + active["bill_code"] + ")").tolist()
+                sel  = st.selectbox("Select client to remove:", ["— select —"] + opts,
+                                    key=f"remove_sel_{month_idx}_{ws}_{we}")
+                if sel and sel != "— select —":
+                    idx_r = opts.index(sel)
+                    row_r = active.iloc[idx_r]
+                    st.warning(f"⚠️ **{sel}** will be hidden from **{ws}** onwards. All prior data is preserved.")
+                    if st.button(f"Confirm Remove {sel}", key=f"confirm_remove_{month_idx}_{ws}_{we}"):
+                        Q.deactivate_tracker_client(conn, row_r["display_name"], row_r["bill_code"], str(ws))
+                        st.success(f"{sel} removed from {ws} onwards.")
+                        st.rerun()
+
+        with restore_tab:
+            all_clients2 = Q.get_all_tracker_clients(conn)
+            inactive = all_clients2[all_clients2["is_active"] == False]
+            if inactive.empty:
+                st.info("No deactivated clients.")
+            else:
+                opts2 = (inactive["display_name"] + " (" + inactive["bill_code"] + ")"
+                         + " — deactivated from " + inactive["deactivated_from"].astype(str)).tolist()
+                sel2  = st.selectbox("Select client to restore:", ["— select —"] + opts2,
+                                     key=f"restore_sel_{month_idx}_{ws}_{we}")
+                if sel2 and sel2 != "— select —":
+                    idx2_r = opts2.index(sel2)
+                    row2_r = inactive.iloc[idx2_r]
+                    if st.button(f"Restore {row2_r['display_name']}", key=f"confirm_restore_{month_idx}_{ws}_{we}"):
+                        Q.reactivate_tracker_client(conn, row2_r["display_name"], row2_r["bill_code"])
+                        st.success(f"{row2_r['display_name']} restored.")
+                        st.rerun()
 
 
 

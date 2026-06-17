@@ -927,6 +927,7 @@ def get_tracker_week_data(
             SELECT display_name, bill_code, service_type, remittance_name
             FROM skilled_tracker_clients
             WHERE is_active = TRUE
+               OR (deactivated_from IS NOT NULL AND deactivated_from > CAST(? AS DATE))
         ),
         rem AS (
             SELECT
@@ -975,7 +976,7 @@ def get_tracker_week_data(
         LEFT JOIN rem   ON rem.display_name  = cl.display_name AND rem.bill_code  = cl.bill_code
         LEFT JOIN recon ON recon.display_name = cl.display_name AND recon.bill_code = cl.bill_code
         ORDER BY cl.display_name, cl.bill_code
-    """, [week_start, week_end, week_start, week_end]).df()
+    """, [week_start, week_start, week_end, week_start, week_end]).df()
 
 
 def get_tracker_ytd(conn: duckdb.DuckDBPyConnection, year: int = 2026) -> pd.DataFrame:
@@ -1118,6 +1119,30 @@ def update_tracker_comment(conn, comment_id: int, new_text: str) -> None:
 
 def delete_tracker_comment(conn, comment_id: int) -> None:
     conn.execute("DELETE FROM skilled_tracker_comments WHERE id = ?", [comment_id])
+
+def deactivate_tracker_client(conn, display_name: str, bill_code: str, from_date: str) -> None:
+    """Mark client inactive from from_date onwards. Historical data is preserved."""
+    conn.execute("""
+        UPDATE skilled_tracker_clients
+        SET is_active = FALSE, deactivated_from = CAST(? AS DATE)
+        WHERE display_name = ? AND bill_code = ?
+    """, [from_date, display_name, bill_code])
+
+def reactivate_tracker_client(conn, display_name: str, bill_code: str) -> None:
+    """Reactivate a previously deactivated client."""
+    conn.execute("""
+        UPDATE skilled_tracker_clients
+        SET is_active = TRUE, deactivated_from = NULL
+        WHERE display_name = ? AND bill_code = ?
+    """, [display_name, bill_code])
+
+def get_all_tracker_clients(conn) -> "pd.DataFrame":
+    """Return all clients including inactive ones — for management UI."""
+    return conn.execute("""
+        SELECT display_name, bill_code, service_type, is_active, deactivated_from, added_at
+        FROM skilled_tracker_clients
+        ORDER BY is_active DESC, display_name
+    """).df()
 
 def add_tracker_client(
     conn: duckdb.DuckDBPyConnection,
