@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 _ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(_ROOT) not in sys.path:
@@ -195,6 +196,72 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
                     st.warning("Display name and bill code are required.")
 
 
+
+# ── Heatmap chart ──────────────────────────────────────────────────────────────
+def _build_heatmap(df) -> go.Figure:
+    """Build client × month collection-rate heatmap from get_tracker_heatmap() output."""
+    month_keys = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
+    month_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+    # Only include months up to today
+    from datetime import date as _date
+    cur_month = _date.today().month
+    month_keys   = month_keys[:cur_month]
+    month_labels = month_labels[:cur_month]
+
+    clients = df["client_label"].tolist()
+    z, text = [], []
+    for _, row in df.iterrows():
+        row_z, row_t = [], []
+        for mk in month_keys:
+            b = row.get(f"{mk}_b", 0) or 0
+            p = row.get(f"{mk}_p", 0) or 0
+            if b == 0:
+                row_z.append(None)
+                row_t.append("—")
+            else:
+                rate = min(p / b * 100, 100)
+                row_z.append(rate)
+                row_t.append(f"{rate:.0f}%<br>${p:,.0f} / ${b:,.0f}")
+        z.append(row_z)
+        text.append(row_t)
+
+    fig = go.Figure(go.Heatmap(
+        z=z,
+        x=month_labels,
+        y=clients,
+        text=text,
+        texttemplate="%{text}",
+        hovertemplate="<b>%{y}</b><br>%{x}: %{text}<extra></extra>",
+        colorscale=[
+            [0.0,  "#a12c7b"],   # Red  — 0%
+            [0.5,  "#d19900"],   # Gold — 50%
+            [0.75, "#edb336"],   # Yellow — 75%
+            [0.95, "#437a22"],   # Green — 95%
+            [1.0,  "#01696f"],   # Teal — 100%
+        ],
+        zmin=0, zmax=100,
+        colorbar=dict(
+            title="Collection %",
+            ticksuffix="%",
+            tickfont=dict(color="#cdccca"),
+            titlefont=dict(color="#cdccca"),
+        ),
+        xgap=2, ygap=2,
+    ))
+
+    fig.update_layout(
+        title=dict(text="Collection Rate by Client × Month", font=dict(color="#cdccca", size=15)),
+        paper_bgcolor="#1c1b19",
+        plot_bgcolor="#1c1b19",
+        font=dict(color="#cdccca", size=11),
+        height=max(300, len(clients) * 38 + 80),
+        margin=dict(l=10, r=10, t=50, b=40),
+        xaxis=dict(side="top", tickfont=dict(color="#cdccca")),
+        yaxis=dict(tickfont=dict(color="#cdccca"), autorange="reversed"),
+    )
+    return fig
+
 # ── Summary (YTD) ──────────────────────────────────────────────────────────────
 def _render_summary(conn):
     df = Q.get_tracker_ytd(conn, YEAR)
@@ -213,6 +280,16 @@ def _render_summary(conn):
     k3.metric("Total Pending YTD",  _fmt_usd(total_pending))
     k4.metric("Collection Rate",    f"{coll_rate:.1f}%")
 
+    # ── Heatmap ───────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Collection Rate by Client × Month")
+    heatmap_df = Q.get_tracker_heatmap(conn, YEAR)
+    if not heatmap_df.empty:
+        st.plotly_chart(_build_heatmap(heatmap_df), use_container_width=True)
+    else:
+        st.info("No remittance data yet to build heatmap.")
+
+    # ── YTD Table ─────────────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("YTD by Client")
 

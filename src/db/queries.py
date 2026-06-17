@@ -1026,6 +1026,60 @@ def get_tracker_ytd(conn: duckdb.DuckDBPyConnection, year: int = 2026) -> pd.Dat
     """, [year]).df()
 
 
+
+def get_tracker_heatmap(conn: duckdb.DuckDBPyConnection, year: int = 2026) -> pd.DataFrame:
+    """Per (client, month) collection rate % for heatmap. Returns wide dataframe."""
+    return conn.execute("""
+        WITH clients AS (
+            SELECT display_name, bill_code, remittance_name
+            FROM skilled_tracker_clients WHERE is_active = TRUE
+        ),
+        monthly AS (
+            SELECT
+                c.display_name,
+                c.bill_code,
+                DATE_PART('month', r.first_dos) AS month_num,
+                SUM(r.charge_amount)  AS billed_amt,
+                SUM(r.payment_amount) AS paid_amt
+            FROM clients c
+            JOIN remittance r
+                ON r.client_name_combined = c.remittance_name
+               AND DATE_PART('year', r.first_dos) = ?
+               AND r.is_latest = TRUE
+            GROUP BY c.display_name, c.bill_code, DATE_PART('month', r.first_dos)
+        )
+        SELECT
+            c.display_name || ' ('  || c.bill_code || ')' AS client_label,
+            COALESCE(SUM(CASE WHEN m.month_num = 1  THEN m.billed_amt ELSE 0 END), 0) AS jan_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 1  THEN m.paid_amt   ELSE 0 END), 0) AS jan_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 2  THEN m.billed_amt ELSE 0 END), 0) AS feb_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 2  THEN m.paid_amt   ELSE 0 END), 0) AS feb_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 3  THEN m.billed_amt ELSE 0 END), 0) AS mar_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 3  THEN m.paid_amt   ELSE 0 END), 0) AS mar_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 4  THEN m.billed_amt ELSE 0 END), 0) AS apr_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 4  THEN m.paid_amt   ELSE 0 END), 0) AS apr_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 5  THEN m.billed_amt ELSE 0 END), 0) AS may_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 5  THEN m.paid_amt   ELSE 0 END), 0) AS may_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 6  THEN m.billed_amt ELSE 0 END), 0) AS jun_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 6  THEN m.paid_amt   ELSE 0 END), 0) AS jun_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 7  THEN m.billed_amt ELSE 0 END), 0) AS jul_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 7  THEN m.paid_amt   ELSE 0 END), 0) AS jul_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 8  THEN m.billed_amt ELSE 0 END), 0) AS aug_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 8  THEN m.paid_amt   ELSE 0 END), 0) AS aug_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 9  THEN m.billed_amt ELSE 0 END), 0) AS sep_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 9  THEN m.paid_amt   ELSE 0 END), 0) AS sep_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 10 THEN m.billed_amt ELSE 0 END), 0) AS oct_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 10 THEN m.paid_amt   ELSE 0 END), 0) AS oct_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 11 THEN m.billed_amt ELSE 0 END), 0) AS nov_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 11 THEN m.paid_amt   ELSE 0 END), 0) AS nov_p,
+            COALESCE(SUM(CASE WHEN m.month_num = 12 THEN m.billed_amt ELSE 0 END), 0) AS dec_b,
+            COALESCE(SUM(CASE WHEN m.month_num = 12 THEN m.paid_amt   ELSE 0 END), 0) AS dec_p
+        FROM clients c
+        LEFT JOIN monthly m ON m.display_name = c.display_name AND m.bill_code = c.bill_code
+        GROUP BY c.display_name, c.bill_code
+        ORDER BY c.display_name
+    """, [year]).df()
+
 def get_tracker_comments(
     conn: duckdb.DuckDBPyConnection,
     display_name: str,
