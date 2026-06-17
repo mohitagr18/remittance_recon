@@ -15,7 +15,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from src.config import cfg
-from src.db import get_conn
+from src.ui.components.filters import _get_conn
 import src.db.queries as Q
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ def _render_summary(conn):
 # ── Main page ──────────────────────────────────────────────────────────────────
 def main():
     st.title("📊 Skilled Billing Tracker")
-    conn = get_conn()
+    conn = _get_conn()
 
     current_month = date.today().month
     available_months = MONTHS[:current_month]  # Jan..current month
