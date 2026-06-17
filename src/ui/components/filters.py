@@ -8,13 +8,18 @@ import streamlit as st
 
 from src.db import queries
 from src.db.connection import get_persistent_conn
+from src.db.schema import create_all
 from src.config import cfg
 
 
 def _get_conn():
-    """Return or create a persistent DB connection stored in session state."""
+    """Return or create a persistent DB connection stored in session state.
+    Runs create_all() on first connection to ensure schema is up to date.
+    """
     if "db_conn" not in st.session_state:
-        st.session_state.db_conn = get_persistent_conn(cfg.db_path)
+        conn = get_persistent_conn(cfg.db_path)
+        create_all(conn)  # idempotent — CREATE TABLE IF NOT EXISTS
+        st.session_state.db_conn = conn
     return st.session_state.db_conn
 
 
