@@ -95,7 +95,7 @@ def _render_comments(conn, display_name: str, bill_code: str, billing_week: str)
 
 
 # ── Weekly table ───────────────────────────────────────────────────────────────
-def _render_week(conn, ws: date, we: date):
+def _render_week(conn, ws: date, we: date, month_idx: int = 0):
     week_label = _fmt_week(ws, we)
     df = Q.get_tracker_week_data(conn, str(ws), str(we))
 
@@ -138,7 +138,7 @@ def _render_week(conn, ws: date, we: date):
     # Row selector for comments
     client_options = df["display_name"] + " (" + df["bill_code"] + ")"
     selected = st.selectbox("View / add comments for:", ["— select a client —"] + list(client_options),
-                            key=f"sel_{ws}_{we}")
+                            key=f"sel_{month_idx}_{ws}_{we}")
     if selected and selected != "— select a client —":
         idx = list(client_options).index(selected)
         row = df.iloc[idx]
@@ -146,7 +146,7 @@ def _render_week(conn, ws: date, we: date):
 
     # Add new client row
     with st.expander("➕ Add Client Row"):
-        with st.form(key=f"add_client_{ws}_{we}"):
+        with st.form(key=f"add_client_{month_idx}_{ws}_{we}"):
             c1, c2, c3 = st.columns(3)
             new_name = c1.text_input("Display Name (e.g. SMITH, JOHN LPN)")
             new_code = c2.text_input("Bill Code (e.g. T1003)")
@@ -225,7 +225,7 @@ def main():
             week_tabs = st.tabs(week_labels)
             for j, (ws, we) in enumerate(weeks):
                 with week_tabs[j]:
-                    _render_week(conn, ws, we)
+                    _render_week(conn, ws, we, month_idx=i)
 
 
 main()
