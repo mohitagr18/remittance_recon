@@ -898,3 +898,197 @@ def recent_denials(
     return conn.execute(sql, params).df()
 
 
+
+
+# ── Skilled Tracker Queries ────────────────────────────────────────────────────
+
+def get_tracker_clients(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """All active (display_name, bill_code) pairs ordered by display_name."""
+    return conn.execute("""
+        SELECT id, display_name, bill_code, service_type, remittance_name, is_active
+        FROM skilled_tracker_clients
+        WHERE is_active = TRUE
+        ORDER BY display_name, bill_code
+    """).df()
+
+
+def get_tracker_week_data(
+    conn: duckdb.DuckDBPyConnection,
+    week_start: str,
+    week_end: str,
+) -> pd.DataFrame:
+    """
+    Returns one row per active (display_name, bill_code) for the given week.
+    Aggregates remittance rows whose DOS falls within [week_start, week_end].
+    Also pulls payroll hours from reconciliation for the same week.
+    """
+    return conn.execute("""
+        WITH clients AS (
+            SELECT display_name, bill_code, service_type, remittance_name
+            FROM skilled_tracker_clients
+            WHERE is_active = TRUE
+        ),
+        rem AS (
+            SELECT
+                c.display_name,
+                c.bill_code,
+                SUM(r.charge_amount)   AS billed_amt,
+                SUM(r.payment_amount)  AS paid_amt,
+                SUM(r.billed_hours)    AS billed_hrs,
+                SUM(r.paid_hours)      AS paid_hrs,
+                COUNT(r.id)            AS txn_count
+            FROM clients c
+            JOIN remittance r
+                ON r.client_name_combined = c.remittance_name
+               AND r.first_dos BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+               AND r.is_latest = TRUE
+            GROUP BY c.display_name, c.bill_code
+        ),
+        recon AS (
+            SELECT
+                c.display_name,
+                c.bill_code,
+                SUM(rc.payroll_hours) AS payroll_hrs
+            FROM clients c
+            JOIN reconciliation rc
+                ON rc.client_name_payroll = c.display_name
+               AND rc.week_start_date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
+            GROUP BY c.display_name, c.bill_code
+        )
+        SELECT
+            cl.display_name,
+            cl.bill_code,
+            cl.service_type,
+            COALESCE(recon.payroll_hrs, 0)                              AS payroll_hrs,
+            COALESCE(rem.billed_hrs, 0)                                 AS units_billed,
+            COALESCE(rem.billed_amt, 0)                                 AS billed_amt,
+            COALESCE(rem.paid_amt, 0)                                   AS paid_amt,
+            COALESCE(rem.billed_amt, 0) - COALESCE(rem.paid_amt, 0)    AS pending_amt,
+            CASE
+                WHEN COALESCE(rem.billed_amt, 0) = 0 THEN 'No Claims'
+                WHEN COALESCE(rem.paid_amt, 0) >= COALESCE(rem.billed_amt, 0) THEN 'Paid in Full'
+                WHEN COALESCE(rem.paid_amt, 0) > 0 THEN 'Partial'
+                ELSE 'Unpaid'
+            END AS status,
+            COALESCE(rem.txn_count, 0) AS txn_count
+        FROM clients cl
+        LEFT JOIN rem   ON rem.display_name  = cl.display_name AND rem.bill_code  = cl.bill_code
+        LEFT JOIN recon ON recon.display_name = cl.display_name AND recon.bill_code = cl.bill_code
+        ORDER BY cl.display_name, cl.bill_code
+    """, [week_start, week_end, week_start, week_end]).df()
+
+
+def get_tracker_ytd(conn: duckdb.DuckDBPyConnection, year: int = 2026) -> pd.DataFrame:
+    """YTD summary per (display_name, bill_code) with monthly paid breakdown."""
+    return conn.execute("""
+        WITH clients AS (
+            SELECT display_name, bill_code, service_type, remittance_name
+            FROM skilled_tracker_clients WHERE is_active = TRUE
+        ),
+        monthly AS (
+            SELECT
+                c.display_name, c.bill_code,
+                DATE_PART('month', r.first_dos) AS month_num,
+                SUM(r.charge_amount)  AS billed_amt,
+                SUM(r.payment_amount) AS paid_amt,
+                SUM(r.billed_hours)   AS billed_hrs
+            FROM clients c
+            JOIN remittance r
+                ON r.client_name_combined = c.remittance_name
+               AND DATE_PART('year', r.first_dos) = ?
+               AND r.is_latest = TRUE
+            GROUP BY c.display_name, c.bill_code, DATE_PART('month', r.first_dos)
+        )
+        SELECT
+            c.display_name,
+            c.bill_code,
+            c.service_type,
+            COALESCE(SUM(m.billed_hrs), 0)  AS total_hrs,
+            COALESCE(SUM(m.billed_amt), 0)  AS total_billed,
+            COALESCE(SUM(m.paid_amt), 0)    AS total_paid,
+            COALESCE(SUM(m.billed_amt), 0) - COALESCE(SUM(m.paid_amt), 0) AS total_pending,
+            COALESCE(SUM(CASE WHEN m.month_num = 1  THEN m.paid_amt ELSE 0 END), 0) AS jan,
+            COALESCE(SUM(CASE WHEN m.month_num = 2  THEN m.paid_amt ELSE 0 END), 0) AS feb,
+            COALESCE(SUM(CASE WHEN m.month_num = 3  THEN m.paid_amt ELSE 0 END), 0) AS mar,
+            COALESCE(SUM(CASE WHEN m.month_num = 4  THEN m.paid_amt ELSE 0 END), 0) AS apr,
+            COALESCE(SUM(CASE WHEN m.month_num = 5  THEN m.paid_amt ELSE 0 END), 0) AS may,
+            COALESCE(SUM(CASE WHEN m.month_num = 6  THEN m.paid_amt ELSE 0 END), 0) AS jun,
+            COALESCE(SUM(CASE WHEN m.month_num = 7  THEN m.paid_amt ELSE 0 END), 0) AS jul,
+            COALESCE(SUM(CASE WHEN m.month_num = 8  THEN m.paid_amt ELSE 0 END), 0) AS aug,
+            COALESCE(SUM(CASE WHEN m.month_num = 9  THEN m.paid_amt ELSE 0 END), 0) AS sep,
+            COALESCE(SUM(CASE WHEN m.month_num = 10 THEN m.paid_amt ELSE 0 END), 0) AS oct,
+            COALESCE(SUM(CASE WHEN m.month_num = 11 THEN m.paid_amt ELSE 0 END), 0) AS nov,
+            COALESCE(SUM(CASE WHEN m.month_num = 12 THEN m.paid_amt ELSE 0 END), 0) AS dec_
+        FROM clients c
+        LEFT JOIN monthly m ON m.display_name = c.display_name AND m.bill_code = c.bill_code
+        GROUP BY c.display_name, c.bill_code, c.service_type
+        ORDER BY total_billed DESC
+    """, [year]).df()
+
+
+def get_tracker_comments(
+    conn: duckdb.DuckDBPyConnection,
+    display_name: str,
+    bill_code: str,
+    billing_week: str,
+) -> pd.DataFrame:
+    return conn.execute("""
+        SELECT author, comment_text, created_at
+        FROM skilled_tracker_comments
+        WHERE display_name = ? AND bill_code = ? AND billing_week = ?
+        ORDER BY created_at ASC
+    """, [display_name, bill_code, billing_week]).df()
+
+
+def add_tracker_comment(
+    conn: duckdb.DuckDBPyConnection,
+    display_name: str,
+    bill_code: str,
+    billing_week: str,
+    comment_text: str,
+    author: str,
+) -> None:
+    conn.execute("""
+        INSERT INTO skilled_tracker_comments
+            (id, display_name, bill_code, billing_week, comment_text, author)
+        VALUES (nextval('seq_skilled_tracker_comments'), ?, ?, ?, ?, ?)
+    """, [display_name, bill_code, billing_week, comment_text, author])
+
+
+def add_tracker_client(
+    conn: duckdb.DuckDBPyConnection,
+    display_name: str,
+    bill_code: str,
+    service_type: str,
+    remittance_name: str | None = None,
+) -> None:
+    conn.execute("""
+        INSERT INTO skilled_tracker_clients
+            (id, display_name, bill_code, service_type, remittance_name, is_active)
+        VALUES (nextval('seq_skilled_tracker_clients'), ?, ?, ?, ?, TRUE)
+        ON CONFLICT (display_name, bill_code) DO UPDATE SET is_active = TRUE
+    """, [display_name, bill_code, service_type, remittance_name])
+
+
+def save_validation_run(
+    conn: duckdb.DuckDBPyConnection,
+    excel_filename: str,
+    total: int,
+    passed: int,
+    failed: int,
+    report_json: str,
+) -> None:
+    conn.execute("""
+        INSERT INTO tracker_validation_runs
+            (id, excel_filename, total_tests, passed_tests, failed_tests, report_json)
+        VALUES (nextval('seq_tracker_validation_runs'), ?, ?, ?, ?, ?)
+    """, [excel_filename, total, passed, failed, report_json])
+
+
+def get_validation_history(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    return conn.execute("""
+        SELECT id, run_at, excel_filename, total_tests, passed_tests, failed_tests
+        FROM tracker_validation_runs
+        ORDER BY run_at DESC
+        LIMIT 10
+    """).df()

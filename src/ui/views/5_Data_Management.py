@@ -41,7 +41,7 @@ st.markdown(
 
 conn = _get_conn()
 
-tab_ingest, tab_tests = st.tabs(["📂 File Ingestion & History", "🧪 Automated Test Suite"])
+tab_ingest, tab_tests, tab_evv = st.tabs(["📂 File Ingestion & History", "🧪 Automated Test Suite", "📋 EVV Tracker Validation"])
 
 with tab_ingest:
     # Check session state for success messages from runs
@@ -283,3 +283,124 @@ with tab_tests:
                     st.code(tb, language="text")
                 else:
                     st.caption("No traceback detail found in pytest stdout.")
+
+
+with tab_evv:
+    import json, io
+    from datetime import datetime
+
+    st.markdown(
+        "<div class=\'section-header\'><h3>📋 EVV Tracker Validation</h3></div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Upload the latest Excel tracker file to validate it against live DuckDB data. "
+        "Use this to confirm accuracy before retiring the Excel file permanently."
+    )
+
+    # ── Upload ──────────────────────────────────────────────────────────────────
+    st.markdown("#### Upload Tracker File")
+    uploaded = st.file_uploader(
+        "Upload EVV Billing Log (.xlsx)",
+        type=["xlsx"],
+        key="evv_tracker_upload",
+        label_visibility="collapsed",
+    )
+
+    tracker_path = cfg.input_dir / "EVV-2026-Billing-Log-Skilled.xlsx"
+    if uploaded:
+        tracker_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tracker_path, "wb") as fh:
+            fh.write(uploaded.getbuffer())
+        st.success(f"✅ Uploaded: **{uploaded.name}** — saved for validation.")
+        st.session_state["evv_tracker_filename"] = uploaded.name
+        st.session_state["evv_tracker_uploaded_at"] = datetime.now().strftime("%b %d, %Y %I:%M %p")
+
+    if tracker_path.exists():
+        fname = st.session_state.get("evv_tracker_filename", tracker_path.name)
+        utime = st.session_state.get("evv_tracker_uploaded_at", "previously uploaded")
+        st.info(f"📄 Current file: **{fname}** · {utime}", icon="📄")
+    else:
+        st.warning("No tracker file uploaded yet. Upload one above to run validation.")
+
+    st.markdown("---")
+
+    # ── Run validation ──────────────────────────────────────────────────────────
+    if st.button("▶ Run EVV Tracker Validation", type="primary", disabled=not tracker_path.exists()):
+        import importlib, sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
+
+        # Lazy import test module
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "test_evv_tracker_validation",
+            str(Path(__file__).resolve().parent.parent.parent.parent / "tests" / "test_evv_tracker_validation.py"),
+        )
+        test_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(test_mod)
+
+        with st.spinner("Running validation suite…"):
+            results = test_mod.run_all_tests(tracker_path, conn)
+
+        total   = len(results)
+        passed  = sum(1 for r in results if r.passed)
+        failed  = total - passed
+
+        if failed == 0:
+            st.success(f"✅ All {total} validation tests passed!")
+        else:
+            st.error(f"⚠️ {failed} of {total} tests found discrepancies.")
+
+        st.markdown("#### Results")
+        for r in results:
+            icon = "✅" if r.passed else "⚠️"
+            label = f"{icon} **{r.name}** — {r.total_checks - r.failed_checks}/{r.total_checks} matched"
+            if r.error:
+                with st.expander(f"❌ **{r.name}** — Error"):
+                    st.code(r.error)
+            elif not r.passed:
+                with st.expander(label):
+                    diff_df = pd.DataFrame(r.diffs)
+                    st.dataframe(diff_df, use_container_width=True, hide_index=True)
+            else:
+                st.markdown(label)
+
+        # Save run to DB
+        report_json = json.dumps([r.to_dict() for r in results], default=str)
+        fname = st.session_state.get("evv_tracker_filename", tracker_path.name)
+        from src.db import queries as _q
+        _q.save_validation_run(conn, fname, total, passed, failed, report_json)
+
+        # Download report
+        diff_df = test_mod.results_to_df(results)
+        if not diff_df.empty:
+            csv_buf = io.StringIO()
+            diff_df.to_csv(csv_buf, index=False)
+            st.download_button(
+                label="⬇️ Download Diff Report (CSV)",
+                data=csv_buf.getvalue(),
+                file_name=f"evv_tracker_validation_{datetime.now().strftime('%Y-%m-%d_%H%M')}.csv",
+                mime="text/csv",
+            )
+
+    st.markdown("---")
+
+    # ── History ─────────────────────────────────────────────────────────────────
+    st.markdown("#### Recent Validation Runs")
+    from src.db import queries as _q2
+    hist = _q2.get_validation_history(conn)
+    if hist.empty:
+        st.caption("No validation runs yet.")
+    else:
+        hist["run_at"] = pd.to_datetime(hist["run_at"]).dt.strftime("%b %d, %Y %I:%M %p")
+        hist["Result"] = hist.apply(
+            lambda r: f"✅ {r.passed_tests}/{r.total_tests} passed"
+            if r.failed_tests == 0
+            else f"⚠️ {r.failed_tests}/{r.total_tests} failed", axis=1
+        )
+        st.dataframe(
+            hist[["run_at", "excel_filename", "Result"]].rename(
+                columns={"run_at": "Run At", "excel_filename": "File"}
+            ),
+            use_container_width=True, hide_index=True,
+        )
