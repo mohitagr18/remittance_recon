@@ -70,6 +70,9 @@ def compute_result(
     # ── Follow-up classification ──────────────────────────────────────────────
     if billed_hrs < 1:
         return "Follow up", "Not Billed"
+    # If paid ≈ payroll, payer made it whole regardless of billing amount → Good
+    if abs(payroll_hrs - paid_hrs) <= tolerance:
+        return "Good", None
     if billed_hrs < payroll_hrs - tolerance:
         return "Follow up", "Billed Short"
 
