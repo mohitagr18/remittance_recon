@@ -135,17 +135,39 @@ def _test_amounts(
     total = 0
     failed = 0
 
-    grouped = excel_df.groupby(["display_name", "bill_code", "billing_week"])[col].sum().reset_index()
-
-    # Resolve remittance name lookup
+    # Resolve remittance name lookup first so we can group by remittance_name
     nm = conn.execute("SELECT display_name, remittance_name FROM skilled_tracker_clients").df()
     nm_dict = dict(zip(nm["display_name"], nm["remittance_name"]))
 
+    # Map each Excel row to its remittance_name, then group by (remittance_name, billing_week)
+    # This correctly merges LPN + RN rows that share the same remittance_name in the DB
+    excel_mapped = excel_df.copy()
+    excel_mapped["remittance_name"] = excel_mapped["display_name"].map(nm_dict)
+
+    # Rows with no mapping tracked separately
+    no_mapping = excel_mapped[excel_mapped["remittance_name"].isna() & (excel_mapped[col] > 0)]
+    for _, nm_row in no_mapping.iterrows():
+        diffs.append({
+            "display_name": nm_row["display_name"], "bill_code": nm_row["bill_code"],
+            "week": nm_row["billing_week"], "excel_val": float(nm_row[col]),
+            "db_val": 0.0, "delta": float(nm_row[col]),
+            "note": "no remittance_name mapping",
+        })
+
+    grouped = (
+        excel_mapped[excel_mapped["remittance_name"].notna()]
+        .groupby(["remittance_name", "billing_week"])[col]
+        .sum()
+        .reset_index()
+    )
+
     for _, row in grouped.iterrows():
         excel_val = float(row[col])
-        name = row["display_name"]
-        code = row["bill_code"]
+        rem_name = row["remittance_name"]
         week = row["billing_week"]
+        # Use first matching display_name for reporting
+        display = excel_mapped[excel_mapped["remittance_name"] == rem_name]["display_name"].iloc[0]
+        code = ""
         total += 1
 
         if not week or "/" not in week:
@@ -153,17 +175,6 @@ def _test_amounts(
         try:
             ws, we = _week_str_to_dates(week)
         except Exception:
-            continue
-
-        rem_name = nm_dict.get(name)
-        if not rem_name:
-            if excel_val > 0:
-                diffs.append({
-                    "display_name": name, "bill_code": code, "week": week,
-                    "excel_val": excel_val, "db_val": 0.0, "delta": excel_val,
-                    "note": "no remittance_name mapping",
-                })
-                failed += 1
             continue
 
         if col == "billed_amt":
@@ -195,7 +206,7 @@ def _test_amounts(
         delta = abs(excel_val - db_val)
         if delta > _TOL:
             diffs.append({
-                "display_name": name, "bill_code": code, "week": week,
+                "display_name": display, "remittance_name": rem_name, "week": week,
                 "excel_val": round(excel_val, 2),
                 "db_val":    round(db_val, 2),
                 "delta":     round(delta, 2),
