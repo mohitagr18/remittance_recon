@@ -70,7 +70,7 @@ def _fmt_usd(v: float) -> str:
 
 # ── Comments panel ─────────────────────────────────────────────────────────────
 def _render_comments(conn, display_name: str, bill_code: str, billing_week: str, sel_key: str):
-    """Render comment thread + post form. Uses a reset flag to close panel after posting."""
+    """Render comment thread with inline edit/delete + post form."""
     key_prefix = f"cmt_{display_name}_{bill_code}_{billing_week}".replace(" ", "_").replace("/", "_").replace("'", "")
     reset_flag = f"reset_{sel_key}"
     comments_df = Q.get_tracker_comments(conn, display_name, bill_code, billing_week)
@@ -81,28 +81,74 @@ def _render_comments(conn, display_name: str, bill_code: str, billing_week: str,
             st.caption("No comments yet.")
         else:
             for _, row in comments_df.iterrows():
-                ts = pd.to_datetime(row["created_at"]).strftime("%b %d, %Y  %-I:%M %p")
-                st.markdown(
-                    f"<div style='background:#1e2130;border-radius:8px;padding:8px 12px;margin-bottom:6px;'>"
-                    f"<span style='color:#4f98a3;font-weight:600;'>{row['author']}</span>"
-                    f"<span style='color:#797876;font-size:0.85em;margin-left:10px;'>{ts}</span><br/>"
-                    f"<span style='color:#cdccca;'>{row['comment_text']}</span></div>",
-                    unsafe_allow_html=True,
-                )
+                cid = int(row["id"])
+                ts  = pd.to_datetime(row["created_at"]).strftime("%b %d, %Y  %-I:%M %p")
+                edit_key   = f"editing_{key_prefix}_{cid}"
+                confirm_key = f"confirm_del_{key_prefix}_{cid}"
 
+                # ── Edit mode ──────────────────────────────────────────────
+                if st.session_state.get(edit_key):
+                    with st.form(key=f"edit_form_{key_prefix}_{cid}"):
+                        edited = st.text_area("Edit comment", value=row["comment_text"],
+                                              key=f"edit_txt_{key_prefix}_{cid}", height=80)
+                        c1, c2 = st.columns(2)
+                        if c1.form_submit_button("💾 Save", use_container_width=True):
+                            if edited.strip():
+                                Q.update_tracker_comment(conn, cid, edited.strip())
+                                del st.session_state[edit_key]
+                                st.rerun()
+                        if c2.form_submit_button("✕ Cancel", use_container_width=True):
+                            del st.session_state[edit_key]
+                            st.rerun()
+
+                # ── Normal view ────────────────────────────────────────────
+                else:
+                    bubble_col, action_col = st.columns([10, 1])
+                    with bubble_col:
+                        st.markdown(
+                            f"<div style='background:#1e2130;border-radius:8px;padding:8px 12px;margin-bottom:4px;'>"
+                            f"<span style='color:#4f98a3;font-weight:600;'>{row['author']}</span>"
+                            f"<span style='color:#797876;font-size:0.85em;margin-left:10px;'>{ts}</span><br/>"
+                            f"<span style='color:#cdccca;'>{row['comment_text']}</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                    with action_col:
+                        st.markdown("<div style='padding-top:6px'></div>", unsafe_allow_html=True)
+                        if st.button("✏️", key=f"btn_edit_{key_prefix}_{cid}", help="Edit", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+
+                    # Confirm-delete flow
+                    if st.session_state.get(confirm_key):
+                        cd1, cd2 = st.columns(2)
+                        if cd1.button("🗑 Yes, delete", key=f"yes_del_{key_prefix}_{cid}", use_container_width=True):
+                            Q.delete_tracker_comment(conn, cid)
+                            del st.session_state[confirm_key]
+                            st.rerun()
+                        if cd2.button("Cancel", key=f"no_del_{key_prefix}_{cid}", use_container_width=True):
+                            del st.session_state[confirm_key]
+                            st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"btn_del_{key_prefix}_{cid}", help="Delete", use_container_width=True):
+                            st.session_state[confirm_key] = True
+                            st.rerun()
+
+        st.divider()
         with st.form(key=f"form_{key_prefix}"):
             col1, col2 = st.columns([3, 1])
-            new_comment = col1.text_area("Add a comment", key=f"txt_{key_prefix}", label_visibility="collapsed", placeholder="Add a comment…", height=68)
-            author = col2.text_input("Your name", key=f"auth_{key_prefix}", label_visibility="collapsed", placeholder="Your name")
+            new_comment = col1.text_area("Add a comment", key=f"txt_{key_prefix}",
+                                         label_visibility="collapsed", placeholder="Add a comment…", height=68)
+            author = col2.text_input("Your name", key=f"auth_{key_prefix}",
+                                     label_visibility="collapsed", placeholder="Your name")
             submitted = st.form_submit_button("Post", use_container_width=True)
             if submitted:
                 if new_comment.strip() and author.strip():
-                    Q.add_tracker_comment(conn, display_name, bill_code, billing_week, new_comment.strip(), author.strip())
-                    # Set a reset flag — selectbox index is reset in _render_week before widget renders
+                    Q.add_tracker_comment(conn, display_name, bill_code, billing_week,
+                                          new_comment.strip(), author.strip())
                     st.session_state[reset_flag] = True
                     st.rerun()
                 else:
-                    st.warning("Both comment text and your name are required.")
+                    st.warning("Both comment and your name are required.")
 
 
 # ── Weekly table ───────────────────────────────────────────────────────────────

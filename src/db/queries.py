@@ -1087,7 +1087,7 @@ def get_tracker_comments(
     billing_week: str,
 ) -> pd.DataFrame:
     return conn.execute("""
-        SELECT author, comment_text, created_at
+        SELECT id, author, comment_text, created_at
         FROM skilled_tracker_comments
         WHERE display_name = ? AND bill_code = ? AND billing_week = ?
         ORDER BY created_at ASC
@@ -1108,6 +1108,16 @@ def add_tracker_comment(
         VALUES (nextval('seq_skilled_tracker_comments'), ?, ?, ?, ?, ?)
     """, [display_name, bill_code, billing_week, comment_text, author])
 
+
+
+def update_tracker_comment(conn, comment_id: int, new_text: str) -> None:
+    conn.execute(
+        "UPDATE skilled_tracker_comments SET comment_text = ? WHERE id = ?",
+        [new_text, comment_id]
+    )
+
+def delete_tracker_comment(conn, comment_id: int) -> None:
+    conn.execute("DELETE FROM skilled_tracker_comments WHERE id = ?", [comment_id])
 
 def add_tracker_client(
     conn: duckdb.DuckDBPyConnection,
