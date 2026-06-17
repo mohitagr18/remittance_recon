@@ -70,8 +70,9 @@ def _fmt_usd(v: float) -> str:
 
 # ── Comments panel ─────────────────────────────────────────────────────────────
 def _render_comments(conn, display_name: str, bill_code: str, billing_week: str, sel_key: str):
-    """Render comment thread + post form. sel_key is the parent selectbox key to reset on post."""
+    """Render comment thread + post form. Uses a reset flag to close panel after posting."""
     key_prefix = f"cmt_{display_name}_{bill_code}_{billing_week}".replace(" ", "_").replace("/", "_").replace("'", "")
+    reset_flag = f"reset_{sel_key}"
     comments_df = Q.get_tracker_comments(conn, display_name, bill_code, billing_week)
 
     with st.container():
@@ -80,11 +81,11 @@ def _render_comments(conn, display_name: str, bill_code: str, billing_week: str,
             st.caption("No comments yet.")
         else:
             for _, row in comments_df.iterrows():
-                ts = pd.to_datetime(row["created_at"]).strftime("%b %d, %Y %I:%M %p")
+                ts = pd.to_datetime(row["created_at"]).strftime("%b %d, %Y  %-I:%M %p")
                 st.markdown(
                     f"<div style='background:#1e2130;border-radius:8px;padding:8px 12px;margin-bottom:6px;'>"
                     f"<span style='color:#4f98a3;font-weight:600;'>{row['author']}</span>"
-                    f"<span style='color:#797876;font-size:0.8em;margin-left:8px;'>{ts}</span><br/>"
+                    f"<span style='color:#797876;font-size:0.85em;margin-left:10px;'>{ts}</span><br/>"
                     f"<span style='color:#cdccca;'>{row['comment_text']}</span></div>",
                     unsafe_allow_html=True,
                 )
@@ -97,8 +98,8 @@ def _render_comments(conn, display_name: str, bill_code: str, billing_week: str,
             if submitted:
                 if new_comment.strip() and author.strip():
                     Q.add_tracker_comment(conn, display_name, bill_code, billing_week, new_comment.strip(), author.strip())
-                    # Reset the selectbox so the comment panel closes after posting
-                    st.session_state[sel_key] = "— select a client —"
+                    # Set a reset flag — selectbox index is reset in _render_week before widget renders
+                    st.session_state[reset_flag] = True
                     st.rerun()
                 else:
                     st.warning("Both comment text and your name are required.")
@@ -170,6 +171,12 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
 
     # Row selector for comments — resets to "— select —" after posting
     sel_key = f"sel_{month_idx}_{ws}_{we}"
+    reset_flag = f"reset_{sel_key}"
+    # If a comment was just posted, clear the flag and reset the index before widget renders
+    if st.session_state.get(reset_flag):
+        del st.session_state[reset_flag]
+        if sel_key in st.session_state:
+            del st.session_state[sel_key]
     client_options = df["display_name"] + " (" + df["bill_code"] + ")"
     selected = st.selectbox("View / add comments for:", ["— select a client —"] + list(client_options),
                             key=sel_key)
