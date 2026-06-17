@@ -82,19 +82,39 @@ try:
         FROM reconciliation
         WHERE care_type = 'Skilled' AND client_name_payroll IS NOT NULL
     """).df()["client_name_payroll"].tolist()
-    skilled_clients = sorted(list(set(strip_suffix(name) for name in raw_skilled)))
+    # Case-insensitive dedup: use upper() as the dedup key, keep the canonical
+    # form (prefer the version with a role suffix like LPN/RN so we strip it
+    # correctly, otherwise just take the first seen).
+    def _dedup_names(names):
+        seen = {}
+        for n in names:
+            stripped = strip_suffix(n)
+            key = stripped.upper()
+            if key not in seen:
+                seen[key] = stripped
+        return sorted(seen.values())
+
+    skilled_clients = _dedup_names(raw_skilled)
 
     raw_unskilled = conn.execute("""
         SELECT DISTINCT client_name_payroll
         FROM reconciliation
         WHERE care_type = 'Unskilled' AND client_name_payroll IS NOT NULL
     """).df()["client_name_payroll"].tolist()
-    unskilled_clients = sorted(list(set(strip_suffix(name) for name in raw_unskilled)))
+    unskilled_clients = _dedup_names(raw_unskilled)
 except Exception:
     # Fallback to all if table format differs
     clients = queries.all_clients(conn)
-    skilled_clients = sorted(list(set(strip_suffix(name) for name in clients)))
-    unskilled_clients = sorted(list(set(strip_suffix(name) for name in clients)))
+    def _dedup_names(names):
+        seen = {}
+        for n in names:
+            stripped = strip_suffix(n)
+            key = stripped.upper()
+            if key not in seen:
+                seen[key] = stripped
+        return sorted(seen.values())
+    skilled_clients = _dedup_names(clients)
+    unskilled_clients = _dedup_names(clients)
 
 if not skilled_clients and not unskilled_clients:
     st.info("No clients found. Run the ETL pipeline first.", icon="ℹ️")
