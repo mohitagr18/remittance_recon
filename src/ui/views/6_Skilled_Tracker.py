@@ -28,6 +28,13 @@ STATUS_COLORS = {
     "Unpaid":       "🔴",
     "No Claims":    "⚪",
 }
+# Lower number = higher priority (shown first)
+STATUS_SORT = {
+    "Unpaid":       0,
+    "Partial":      1,
+    "No Claims":    2,
+    "Paid in Full": 3,
+}
 
 
 def _weeks_in_month(year: int, month: int) -> list[tuple[date, date]]:
@@ -61,7 +68,8 @@ def _fmt_usd(v: float) -> str:
 
 
 # ── Comments panel ─────────────────────────────────────────────────────────────
-def _render_comments(conn, display_name: str, bill_code: str, billing_week: str):
+def _render_comments(conn, display_name: str, bill_code: str, billing_week: str, sel_key: str):
+    """Render comment thread + post form. sel_key is the parent selectbox key to reset on post."""
     key_prefix = f"cmt_{display_name}_{bill_code}_{billing_week}".replace(" ", "_").replace("/", "_").replace("'", "")
     comments_df = Q.get_tracker_comments(conn, display_name, bill_code, billing_week)
 
@@ -88,7 +96,8 @@ def _render_comments(conn, display_name: str, bill_code: str, billing_week: str)
             if submitted:
                 if new_comment.strip() and author.strip():
                     Q.add_tracker_comment(conn, display_name, bill_code, billing_week, new_comment.strip(), author.strip())
-                    st.success("Comment saved.")
+                    # Reset the selectbox so the comment panel closes after posting
+                    st.session_state[sel_key] = "— select a client —"
                     st.rerun()
                 else:
                     st.warning("Both comment text and your name are required.")
@@ -102,6 +111,28 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
     if df.empty:
         st.info("No data for this week.")
         return
+
+    # ── Status filter ──────────────────────────────────────────────────────────
+    all_statuses = list(STATUS_SORT.keys())
+    filter_key = f"status_filter_{month_idx}_{ws}_{we}"
+    selected_statuses = st.multiselect(
+        "Filter by status:",
+        options=all_statuses,
+        default=[],
+        key=filter_key,
+        placeholder="All statuses shown",
+    )
+    if selected_statuses:
+        df = df[df["status"].isin(selected_statuses)].copy()
+
+    if df.empty:
+        st.info("No rows match the selected filter.")
+        return
+
+    # ── Sort by status priority ────────────────────────────────────────────────
+    df = df.copy()
+    df["_sort"] = df["status"].map(STATUS_SORT).fillna(99)
+    df = df.sort_values("_sort").drop(columns=["_sort"]).reset_index(drop=True)
 
     # Build display dataframe
     display_cols = ["display_name", "bill_code", "payroll_hrs", "units_billed",
@@ -122,27 +153,29 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
 
     display_df["Comments"] = df.apply(_comment_count, axis=1)
 
-    # Totals row
+    # Totals row (always from full unfiltered df for accurate totals)
+    full_df = Q.get_tracker_week_data(conn, str(ws), str(we))
     totals = {
-        "Client": "**TOTAL**", "Bill Code": "", "Payroll Hrs": round(df["payroll_hrs"].sum(), 2),
-        "Units Billed": round(df["units_billed"].sum(), 2),
-        "Billed $": _fmt_usd(df["billed_amt"].sum()),
-        "Paid $":   _fmt_usd(df["paid_amt"].sum()),
-        "Pending $":_fmt_usd(df["pending_amt"].sum()),
+        "Client": "TOTAL", "Bill Code": "", "Payroll Hrs": round(full_df["payroll_hrs"].sum(), 2),
+        "Units Billed": round(full_df["units_billed"].sum(), 2),
+        "Billed $": _fmt_usd(full_df["billed_amt"].sum()),
+        "Paid $":   _fmt_usd(full_df["paid_amt"].sum()),
+        "Pending $":_fmt_usd(full_df["pending_amt"].sum()),
         "Status": "", "Comments": "",
     }
     display_df = pd.concat([display_df, pd.DataFrame([totals])], ignore_index=True)
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    # Row selector for comments
+    # Row selector for comments — resets to "— select —" after posting
+    sel_key = f"sel_{month_idx}_{ws}_{we}"
     client_options = df["display_name"] + " (" + df["bill_code"] + ")"
     selected = st.selectbox("View / add comments for:", ["— select a client —"] + list(client_options),
-                            key=f"sel_{month_idx}_{ws}_{we}")
+                            key=sel_key)
     if selected and selected != "— select a client —":
         idx = list(client_options).index(selected)
         row = df.iloc[idx]
-        _render_comments(conn, row["display_name"], row["bill_code"], week_label)
+        _render_comments(conn, row["display_name"], row["bill_code"], week_label, sel_key=sel_key)
 
     # Add new client row
     with st.expander("➕ Add Client Row"):
