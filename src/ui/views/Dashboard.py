@@ -282,7 +282,7 @@ def render_dashboard(care_type_filter: str | None):
         display = top_fu.copy()
         show_cols = ["insurance", "client",
                      "payroll_hours", "billed_hours", "paid_hours",
-                     "pending_hrs", "payroll_vs_billed", "reason"]
+                     "pending_hrs", "reason"]
         show_cols = [c for c in show_cols if c in display.columns]
 
         st.caption(f"Showing top {len(display)} follow-up clients · 1 row per client · sorted by pending hrs ↓ · click client to view details")
@@ -300,7 +300,6 @@ def render_dashboard(care_type_filter: str | None):
                 "billed_hours":      st.column_config.NumberColumn("Billed Hrs",  format="%.1f"),
                 "paid_hours":        st.column_config.NumberColumn("Paid Hrs",    format="%.1f"),
                 "pending_hrs":       st.column_config.NumberColumn("⏳ Pending Hrs", format="%.1f"),
-                "payroll_vs_billed": st.column_config.NumberColumn("PvB Δ",       format="%.1f"),
                 "reason":            st.column_config.TextColumn("Reason",        width="medium"),
             },
             key=f"top_fu_table_{care_type_filter}"

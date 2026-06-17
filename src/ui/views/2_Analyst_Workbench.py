@@ -79,7 +79,7 @@ else:
     display_cols = [c for c in [
         "id", "insurance", "client_name_payroll",
         "payroll_hours", "billed_hours", "paid_hours",
-        "payroll_vs_billed", "billing_vs_paid",
+        "billing_vs_paid",
         "result_simple", "result_detailed",
         "yash_comments", "connie_comments",
     ] if c in recon_df.columns]
@@ -112,7 +112,6 @@ else:
             "payroll_hours":      st.column_config.NumberColumn("Payroll",    format="%.1f"),
             "billed_hours":       st.column_config.NumberColumn("Billed",     format="%.1f"),
             "paid_hours":         st.column_config.NumberColumn("Paid",       format="%.1f"),
-            "payroll_vs_billed":  st.column_config.NumberColumn("PvB Δ",      format="%.1f"),
             "billing_vs_paid":    st.column_config.NumberColumn("BvP Δ",      format="%.1f"),
             "result_simple":      st.column_config.TextColumn("Status",       width="small"),
             "result_detailed":    st.column_config.TextColumn("Reason",       width="medium"),

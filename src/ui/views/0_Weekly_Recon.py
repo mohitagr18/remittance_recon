@@ -184,7 +184,7 @@ def render_weekly_recon(care_type: str | None = None):
     show_cols = [
         "insurance", "client", "week_range",
         "payroll_hours", "billed_hours", "paid_hours",
-        "pending_hrs", "payroll_vs_billed",
+        "pending_hrs",
         "status", "reason",
         "is_copay_client",
     ]
@@ -208,7 +208,6 @@ def render_weekly_recon(care_type: str | None = None):
             "billed_hours":      st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
             "paid_hours":        st.column_config.NumberColumn("Paid Hrs",   format="%.1f"),
             "pending_hrs":       st.column_config.NumberColumn("⏳ Pending", format="%.1f"),
-            "payroll_vs_billed": st.column_config.NumberColumn("PvB Δ",      format="%.1f"),
             "status":            st.column_config.TextColumn("Status",       width="small"),
             "reason":            st.column_config.TextColumn("Reason",       width="medium"),
             "is_copay_client":   st.column_config.TextColumn("Copay",    width="small"),
@@ -221,7 +220,7 @@ def render_weekly_recon(care_type: str | None = None):
 
     st.caption(
         f"📊 {len(display):,} clients · sorted by ⏳ Pending hrs ↓ · "
-        f"PvB Δ = Payroll vs Billed difference · Click any row to view individual claim details below"
+        f"Click any row to view individual claim details below"
     )
 
     # ── Render totals row for the entire week ───────────────────────────────────
@@ -235,7 +234,6 @@ def render_weekly_recon(care_type: str | None = None):
             <span>Billed: <b style='color:#a78bfa;'>{total_billed:,.1f}</b></span>
             <span>Paid: <b style='color:#22c55e;'>{total_paid:,.1f}</b></span>
             <span>Pending: <b style='color:#f59e0b;'>{total_pending:,.1f}</b></span>
-            <span>PvB Δ: <b style='color:#e8eaf0;'>{(total_payroll - total_billed):,.1f}</b></span>
         </div>
         """,
         unsafe_allow_html=True,
