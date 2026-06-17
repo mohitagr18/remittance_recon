@@ -242,10 +242,9 @@ def _build_heatmap(df) -> go.Figure:
         ],
         zmin=0, zmax=100,
         colorbar=dict(
-            title="Collection %",
+            title=dict(text="Collection %", font=dict(color="#cdccca")),
             ticksuffix="%",
             tickfont=dict(color="#cdccca"),
-            titlefont=dict(color="#cdccca"),
         ),
         xgap=2, ygap=2,
     ))
