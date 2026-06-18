@@ -69,7 +69,7 @@ def _load_status() -> pd.DataFrame:
             FROM reconciliation r
             JOIN cc ON UPPER(cc.client_name) = UPPER(regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''))
             LEFT JOIN remittance rem
-                ON UPPER(rem.client_name_combined) = UPPER(r.client_name_payroll)
+                ON UPPER(rem.client_name_combined) = UPPER(regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''))
                AND rem.is_latest = TRUE
                AND DATE_PART('year',  rem.first_dos)::INT = DATE_PART('year',  r.week_start_date)::INT
                AND DATE_PART('month', rem.first_dos)::INT = DATE_PART('month', r.week_start_date)::INT
