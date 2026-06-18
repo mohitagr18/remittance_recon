@@ -48,21 +48,26 @@ class TestComputeResultExtended:
         """Delta exactly == TOLERANCE (0.9) on both axes -> Good."""
         assert compute_result(35, 35 + TOLERANCE, 35 + TOLERANCE) == ("Good", None)
 
-    def test_just_over_tolerance_is_followup(self):
-        """Delta > TOLERANCE by a small epsilon -> Follow up."""
-        epsilon = 0.01
-        r, _ = compute_result(35, 35 + TOLERANCE + epsilon, 35 + TOLERANCE + epsilon)
-        assert r == "Follow up"
+    def test_pvb_just_over_tolerance_and_pvp_exceeds(self):
+        """pvb AND pvp both exceed tolerance -> Follow up (not Good)."""
+        # payroll=35, billed=37, paid=33: pvb=-2>tol, pvp=2>tol, billed_short? 37<34.1? No
+        # paid<1? No. paid=33<34.1? YES → Paid Less
+        r, d = compute_result(35, 37, 33)
+        assert r == "Follow up", f"Expected Follow up, got {r}"
 
     def test_bvp_exactly_zero_point_nine_is_good(self):
         """billing_vs_paid = 0.9 (exactly at threshold) -> Good."""
         assert compute_result(35, 35, 35 - TOLERANCE) == ("Good", None)
 
     # ── Billing Error path ────────────────────────────────────────────────────
-    def test_billing_error_small_bvp(self):
-        """0.01 < bvp <= tolerance with billed ≈ payroll -> Billing Error."""
-        # payroll=35, billed=35, paid=34.95: bvp=0.05 (small, non-zero)
-        r, d = compute_result(35, 35, 34.95)
+    def test_billing_error_bvp_within_tolerance(self):
+        """Billing Error fires when pvb>tol, pvp>tol, and 0.01<bvp<=tol."""
+        # payroll=35, billed=38, paid=37.5
+        # pvb = 35-38 = -3 (abs > 0.9) → Good check fails
+        # pvp = abs(35-37.5) = 2.5 (abs > 0.9) → pvp-Good check fails
+        # billed_short? 38 < 34.1? No. paid<1? No. paid_less? 37.5<34.1? No
+        # paid_excess? 37.5>35.9 AND bvp=0.5>0.9? No → Billing Error: 0.01<0.5<=0.9
+        r, d = compute_result(35, 38, 37.5)
         assert r == "Follow up"
         assert d == "Billing Error"
 

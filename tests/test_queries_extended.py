@@ -39,7 +39,7 @@ def _seed_recon(conn, rows):
                 payroll_hours, billed_hours, paid_hours,
                 result_simple, result_detailed, care_type,
                 is_copay_client, match_status
-            ) VALUES (nextval('seq_reconciliation'),?,?,?,?,?,?,?,?,?,?,?,'Unskilled',FALSE,'MATCHED')
+            ) VALUES (nextval('seq_reconciliation'),?,?,?,?,?,?,?,?,?,?,?,FALSE,'MATCHED')
         """, [
             r.get("week_start", "2026-02-18"),
             r.get("week_end",   "2026-02-24"),
@@ -51,6 +51,7 @@ def _seed_recon(conn, rows):
             r.get("paid_hours",      35.0),
             r.get("result_simple",   "Good"),
             r.get("result_detailed", None),
+            r.get("care_type",       "Unskilled"),
         ])
 
 
@@ -201,9 +202,9 @@ class TestClientSummaryPendingHours:
             "INSERT INTO reconciliation "
             "(id, week_start_date, week_end_date, client_name_payroll, "
             " client_name_remittance, payroll_hours, billed_hours, paid_hours, "
-            " result_simple, care_type, match_status) "
+            " result_simple, care_type, is_copay_client, match_status) "
             "VALUES (nextval('seq_reconciliation'),'2026-02-18','2026-02-24',?,?,"
-            "10.0, 10.0, 20.0,'Good','Unskilled','MATCHED')",
+            "10.0, 10.0, 20.0,'Good','Unskilled',FALSE,'MATCHED')",
             [client, client]
         )
         # Week 2: genuinely unpaid -> contribution = 15
@@ -211,9 +212,9 @@ class TestClientSummaryPendingHours:
             "INSERT INTO reconciliation "
             "(id, week_start_date, week_end_date, client_name_payroll, "
             " client_name_remittance, payroll_hours, billed_hours, paid_hours, "
-            " result_simple, care_type, match_status) "
+            " result_simple, care_type, is_copay_client, match_status) "
             "VALUES (nextval('seq_reconciliation'),'2026-02-25','2026-03-03',?,?,"
-            "15.0, 15.0, 0.0,'Follow up','Unskilled','MATCHED')",
+            "15.0, 15.0, 0.0,'Follow up','Unskilled',FALSE,'MATCHED')",
             [client, client]
         )
         df = q.client_summary(conn, client, "Unskilled")

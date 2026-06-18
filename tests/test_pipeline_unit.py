@@ -118,8 +118,9 @@ class TestNormalizeInsurance:
     def test_none_returns_none(self):
         assert _normalize_insurance(None) is None
 
-    def test_empty_string_passthrough(self):
-        assert _normalize_insurance("") == ""
+    def test_empty_string_returns_none(self):
+        """Empty string is falsy -> treated as None by the source."""
+        assert _normalize_insurance("") is None
 
 
 # ── _normalize_client_key ─────────────────────────────────────────────────────
@@ -182,13 +183,16 @@ class TestDedupTcnIsLatest:
             "SELECT is_latest FROM remittance WHERE tcn='LONE_TCN'"
         ).fetchone()[0] is True
 
-    def test_returns_count_of_updated_rows(self):
-        """Return value reflects total rows marked not-latest."""
+    def test_dedup_marks_older_batch_not_latest(self):
+        """After dedup, the lower-batch row must have is_latest=False."""
         conn = _db()
         self._insert(conn, "TCN_A", 100, "A, B", "2026-01-01")
         self._insert(conn, "TCN_A", 200, "A, B", "2026-01-01")
-        count = _dedup_tcn_is_latest(conn)
-        assert count >= 1
+        _dedup_tcn_is_latest(conn)
+        row = conn.execute(
+            "SELECT is_latest FROM remittance WHERE tcn='TCN_A' AND batch=100"
+        ).fetchone()
+        assert row[0] is False
 
 
 # ── incremental write idempotency ────────────────────────────────────────────
