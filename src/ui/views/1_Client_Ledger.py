@@ -646,7 +646,7 @@ else:
         selected_week_start = consolidated_df.iloc[selected_idx]["first_dos"]
         selected_week_end = consolidated_df.iloc[selected_idx]["last_dos"]
 
-        week_claims = daily_claims_df[daily_claims_df["week_start"] == selected_week_start].copy()
+        week_claims = daily_claims_df[         (daily_claims_df["first_dos_date"] >= selected_week_start) &         (daily_claims_df["first_dos_date"] <= selected_week_end)     ].copy()
         
         st.markdown(
             f"""
@@ -661,7 +661,7 @@ else:
         )
 
         daily_display_cols = [
-            "first_dos", "payment_date", "reconciled_status",
+            "first_dos", "payment_date", "reconciled_status", "week_payroll_hours",
             "billed_hours", "paid_hours",
             "charge_amount", "payment_amount", "amt_delta", "tcn"
         ]
@@ -677,6 +677,7 @@ else:
                 "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
                 "payment_date":       st.column_config.DateColumn("Payment Date"),
                 "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
+                            "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
                 "billed_hours":       st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
                 "paid_hours":         st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
                 "charge_amount":      st.column_config.NumberColumn("Billed $", format="$%.2f"),
