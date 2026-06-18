@@ -583,7 +583,7 @@ if not ledger_df.empty:
     if not consolidated_df.empty:
         consolidated_df = consolidated_df.sort_values("first_dos", ascending=False)
 
-    show_unpaid_only = st.checkbox("⏳ Show unpaid/pending line items only (where Paid < Billed)", value=False, key="ledger_show_unpaid")
+    show_unpaid_only = st.checkbox("⏳ Show unpaid/pending line items only (where Paid < Payroll)", value=False, key="ledger_show_unpaid")
     if show_unpaid_only and not consolidated_df.empty:
         is_payroll_week = consolidated_df["week_payroll_hours"].fillna(0.0).astype(float) > 0.0
         is_unresolved_payroll = (
