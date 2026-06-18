@@ -215,5 +215,5 @@ def create_all(conn: duckdb.DuckDBPyConnection) -> None:
             conn.execute(stmt)
     # Migrations: add columns that didn't exist in older schema versions
     conn.execute("ALTER TABLE skilled_tracker_clients ADD COLUMN IF NOT EXISTS deactivated_from DATE DEFAULT NULL")
-            conn.commit()
+    conn.commit()
     conn.execute("CHECKPOINT")
