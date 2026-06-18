@@ -341,6 +341,148 @@ synthetic Excel fixture files with specific structural defects:
 
 ---
 
+---
+
+## Operator Workflow — How Tests Actually Run
+
+> This section is specifically for the **data operator** (the person who drops
+> new Excel files and runs ingestion). No terminal required.
+
+### The Intended Flow
+
+Tests are **already embedded in the app**. The operator never needs to open a
+terminal. Here is the full weekly cadence:
+
+```
+1. Drop new file(s)  →  input/payroll/   or   input/master_remit/
+        ↓
+2. Open the app  →  Admin → Data Management
+        ↓
+3. Tab: "📂 File Ingestion & History"
+   - Scanner auto-detects files with status 🆕 New or 🔄 Changed
+   - Click  🚀 Ingest New Files
+        ↓
+4. After ingestion completes, the app shows a green banner:
+   "✅ Ingestion successfully completed!"
+   AND a blue tip:
+   "💡 Recommendation: Run the Automated Test Suite to verify data integrity"
+        ↓
+5. Click the "🧪 Automated Test Suite" tab (same page)
+   - Click  🧪 Run Test Suite Now
+   - Wait ~10-20 seconds
+        ↓
+6. Read the results (see below)
+```
+
+### Why Tests Are Not Automatic on File Drop
+
+The pipeline **does not auto-run tests** when a file is added to the folder —
+and that is intentional:
+
+- The file scanner (`scan_input_dir`) only **detects** files; it does not parse
+  or validate them.
+- The operator must click **🚀 Ingest New Files** to trigger the pipeline. This
+  is a deliberate human checkpoint — the operator can visually inspect the
+  detected file list before committing.
+- Tests run **after** ingestion, not before, because the Tier 2 (live)
+  integration tests need the file to be on disk at the path `cfg` points to.
+
+**Future enhancement (Backlog):** Wire a `post_ingestion_hook` so that
+`run_pipeline()` automatically calls `pytest` in a subprocess at the end of
+ingestion and stores pass/fail count in the DB. This would close the gap
+and make tests truly automatic. Until then, the blue tip banner after
+ingestion is the operator's prompt.
+
+---
+
+## What the Operator Sees When Tests Run
+
+### All Tests Pass
+```
+✅ All 566 test cases passed successfully!
+⏭️  3 test cases skipped.
+[📋 Show Passed Test List]  ← expandable, shows every test name
+```
+
+**Next step:** Nothing. Proceed to the Weekly Reconciliation view.
+
+---
+
+### Some Tests Fail — What the Screen Shows
+
+```
+❌ 2 test cases failed (out of 566 total)
+
+Failed Test Details:
+🔴 TestParsePayroll ➔ test_paycheck_date  (FAILED)
+  AssertionError: assert '2026-06-18' == '2026-07-04'
+  where '2026-06-18' = str(self.data['paycheck_date'])
+
+🔴 TestFilterByDosRange ➔ test_filters_to_week  (FAILED)
+  AssertionError: assert 0 > 0
+```
+
+---
+
+## Operator Decision Tree — What To Do When a Test Fails
+
+Below is the complete decision tree. Each test class maps to one specific
+next action.
+
+### Tier 2 Live-File Test Failures
+
+These are the only tests that can fail after dropping a new file. Tier 1
+(synthetic) tests are structural and should never fail after a file drop —
+if they do, it means the source code was also changed.
+
+| Failing Test Class | What It Means | Operator Next Step |
+|--------------------|---------------|-------------------|
+| `TestParsePayroll` → `test_paycheck_date` or `test_week_dates` | The new payroll file has a different date format in row 1/2 than expected | Flag to developer. Open the file and check rows 1-2. The date might be in a non-standard cell position. |
+| `TestParsePayroll` → `test_records_non_empty` | The payroll file has 0 detail rows parsed | Open the file. Check that the MMDDYYYY sheet exists and has data below row 3. The file may be a template or empty. |
+| `TestAggregatePayrollHours` → `test_hours_are_positive` | A negative hours value exists in the payroll file | Open the file and search for negative values in Regular hrs / Respite hrs columns. Could be a data entry error. |
+| `TestParseRemittance` → `test_non_empty` | The remittance file parsed 0 records | Check that the sheet is named exactly `"Remittance Report Template"`. A renamed sheet will silently fail. |
+| `TestParseRemittance` → `test_tcn_deduplication` | Duplicate TCN+date+type+batch keys found | This indicates two rows in the remittance file are fully identical. Flag to billing team — may be a double-entry. |
+| `TestFilterByDosRange` → `test_filters_to_week` | No remittance records fall within the payroll week | The remittance file may not yet include the current week's claims, OR the payroll week dates don't align. Check that the payroll week (rows 1-2) matches the remittance dates of service. This is normal if remittance lags behind payroll by more than 1 week. **Not necessarily an error.** |
+| `TestPipeline` → `test_recon_rows_nonzero` | Reconciliation produced 0 rows | Name matching completely failed — no payroll client could be matched to any remittance client. Check the Name Match sheet in the Weekly Recon Excel file. |
+| `TestPipeline` → `test_unmatched_clients` | One or more payroll clients have no remittance match | Open Name Match Manager in the app. Add the unmatched client name mapping. Then click **🔁 Rebuild Reconciliation** in Data Management. |
+| `TestSeedTracker` → any | EVV Billing Log structure changed | Check the EVV file column headers against what the seeder expects. Flag to developer. |
+
+### Skipped Tests (Not Failures)
+
+Skipped tests are **normal and expected**. They mean the required file
+was not found on disk (e.g. EVV file absent). They do not indicate a problem.
+
+```
+⏭️  3 test cases skipped.
+```
+
+This is fine. The skip guard is:
+```python
+pytest.importorskip  /  pytest.mark.skipif(not cfg.evv_tracker_file.exists(), ...)
+```
+
+### Tier 1 Tests Failing After a File Drop (Unusual)
+
+If a purely structural test like `TestComputeResult` or `TestMakeKey` fails
+after a file drop and **no code was changed**, it almost certainly means:
+
+1. A new Python package was installed that broke something, or
+2. The `src/` directory has uncommitted changes someone made directly
+   on the server
+
+In both cases: **flag to developer immediately**. Do not proceed with ingestion.
+
+---
+
+## Recommended Addition to Operator SOP
+
+Add these two lines to whatever SOP document the operator follows weekly:
+
+> **After every file ingestion:**
+> 1. Go to Admin → Data Management → 🧪 Automated Test Suite → click **Run Test Suite Now**
+> 2. If any red 🔴 failures appear, compare against the decision tree in `TESTING.md` before proceeding
+
+
 ## Running the Tests
 
 ### Full suite
