@@ -44,7 +44,7 @@ def copay_monthly_status(
         ),
         recon_monthly AS (
             SELECT
-                r.client_name_payroll,
+                regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', '') AS client_name_payroll,
                 r.insurance,
                 DATE_PART('year', r.week_start_date)::INT  AS yr,
                 DATE_PART('month', r.week_start_date)::INT AS mo,
