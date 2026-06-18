@@ -210,7 +210,7 @@ def render_weekly_recon(care_type: str | None = None):
     )
 
     # ── Build display columns ───────────────────────────────────────────────────
-    display = df.copy()
+    display = df.copy().reset_index(drop=True)  # ensure iloc matches visual row index
 
     # Format date range into one readable column starting with YYYY-MM-DD for chronological sorting
     display["week_range"] = (
@@ -287,11 +287,17 @@ def render_weekly_recon(care_type: str | None = None):
     # ── Render selected client details ──────────────────────────────────────────
     selected_rows = selection.selection.rows if selection.selection else []
     if selected_rows:
-        selected_row = display.iloc[selected_rows[0]]
+        row_idx = selected_rows[0]
+        # Guard: if filter changed and selection is now stale/out-of-bounds, skip
+        if row_idx >= len(display):
+            st.info("ℹ️ Selection is out of range — please click a row in the table above.", icon="ℹ️")
+            return
+        selected_row = display.iloc[row_idx]
         client_name = selected_row["client"]
         w_start = selected_row["week_start"]
         w_end = selected_row["week_end"]
-        
+        payroll_hrs_selected = selected_row.get("payroll_hours", 0) or 0
+
         st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
         st.markdown(
             f"""
@@ -301,7 +307,7 @@ def render_weekly_recon(care_type: str | None = None):
             """,
             unsafe_allow_html=True
         )
-        
+
         # Try with remittance name matching
         rem_name = client_name
         summary_df = queries.client_summary(conn, client_name, care_type=care_type)
@@ -323,13 +329,16 @@ def render_weekly_recon(care_type: str | None = None):
         else:
             # Calculate deltas for dollars
             rem_df["amt_delta"] = rem_df["charge_amount"] - rem_df["payment_amount"]
-            
+
+            # Inject payroll hours from the parent weekly recon row into each detail row
+            rem_df["payroll_hours"] = payroll_hrs_selected
+
             def compute_rec_status(row):
                 b_hrs = row.get("billed_hours", 0) or 0
                 p_hrs = row.get("paid_hours", 0) or 0
                 b_amt = row.get("charge_amount", 0) or 0
                 p_amt = row.get("payment_amount", 0) or 0
-                
+
                 if p_hrs < 0 or p_amt < 0:
                     return "Reversal"
                 if b_hrs > 0:
@@ -357,7 +366,7 @@ def render_weekly_recon(care_type: str | None = None):
             display_cols = [c for c in [
                 "first_dos", "last_dos", "payment_date",
                 "reconciled_status", "charge_amount", "payment_amount", "amt_delta",
-                "billed_hours", "paid_hours", "tcn",
+                "payroll_hours", "billed_hours", "paid_hours", "tcn",
             ] if c in rem_df.columns]
 
             st.dataframe(
@@ -373,6 +382,7 @@ def render_weekly_recon(care_type: str | None = None):
                     "charge_amount":     st.column_config.NumberColumn("Charged Amt", format="$%.2f"),
                     "payment_amount":    st.column_config.NumberColumn("Paid Amt", format="$%.2f"),
                     "amt_delta":         st.column_config.NumberColumn("$ Delta", format="$%.2f"),
+                    "payroll_hours":     st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
                     "billed_hours":      st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
                     "paid_hours":        st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
                     "tcn":               st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
@@ -382,7 +392,7 @@ def render_weekly_recon(care_type: str | None = None):
 
             # Calculate selected client totals
             total_charged = rem_df["charge_amount"].sum()
-            total_paid = rem_df["payment_amount"].sum()
+            total_paid_amt = rem_df["payment_amount"].sum()
             total_delta = rem_df["amt_delta"].sum()
             total_billed_h = rem_df["billed_hours"].sum()
             total_paid_h = rem_df["paid_hours"].sum()
@@ -393,10 +403,11 @@ def render_weekly_recon(care_type: str | None = None):
                             padding:12px 20px;margin-top:8px;font-size:0.82rem;
                             display:flex;gap:24px;flex-wrap:wrap;'>
                     <span style='color:#8892a4;font-weight:600;text-transform:uppercase;letter-spacing:.06em;'>TOTALS ({client_name})</span>
+                    <span>Payroll Hrs: <b style='color:#e8eaf0;'>{payroll_hrs_selected:,.1f}</b></span>
                     <span>Billed Hrs: <b style='color:#e8eaf0;'>{total_billed_h:,.1f}</b></span>
                     <span>Paid Hrs: <b style='color:#22c55e;'>{total_paid_h:,.1f}</b></span>
                     <span>Charged $: <b style='color:#a78bfa;'>${total_charged:,.2f}</b></span>
-                    <span>Paid $: <b style='color:#22c55e;'>${total_paid:,.2f}</b></span>
+                    <span>Paid $: <b style='color:#22c55e;'>${total_paid_amt:,.2f}</b></span>
                     <span>$ Delta: <b style='color:{"#e8eaf0" if total_delta == 0 else "#ef4444"};'>${total_delta:,.2f}</b></span>
                 </div>
                 """,
