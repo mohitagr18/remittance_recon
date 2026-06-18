@@ -67,13 +67,13 @@ def _load_status() -> pd.DataFrame:
                 ROUND(COALESCE(SUM(rem.charge_amount),   0), 2) AS total_billed,
                 ROUND(COALESCE(SUM(rem.payment_amount),  0), 2) AS total_paid
             FROM reconciliation r
-            JOIN cc ON UPPER(cc.client_name) = UPPER(r.client_name_payroll)
+            JOIN cc ON UPPER(cc.client_name) = UPPER(regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''))
             LEFT JOIN remittance rem
                 ON UPPER(rem.client_name_combined) = UPPER(r.client_name_payroll)
                AND rem.is_latest = TRUE
                AND DATE_PART('year',  rem.first_dos)::INT = DATE_PART('year',  r.week_start_date)::INT
                AND DATE_PART('month', rem.first_dos)::INT = DATE_PART('month', r.week_start_date)::INT
-            GROUP BY r.client_name_payroll, cc.copay_amount,
+            GROUP BY regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''), cc.copay_amount,
                      DATE_PART('year',  r.week_start_date)::INT,
                      DATE_PART('month', r.week_start_date)::INT
         )

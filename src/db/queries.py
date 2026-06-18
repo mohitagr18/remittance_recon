@@ -65,9 +65,9 @@ def copay_monthly_status(
             ) rem
               ON UPPER(r.client_name_remittance) = UPPER(rem.client_name_combined)
              AND rem.first_dos BETWEEN r.week_start_date AND r.week_end_date
-            WHERE r.client_name_payroll IN (SELECT client_name FROM copay_clients_active)
+            WHERE UPPER(regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', '')) IN (SELECT UPPER(client_name) FROM copay_clients_active)
             {month_filter}
-            GROUP BY r.client_name_payroll, r.insurance, yr, mo
+            GROUP BY regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''), r.insurance, yr, mo
         ),
         monthly_pending AS (
             SELECT
