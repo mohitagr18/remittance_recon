@@ -227,6 +227,15 @@ if not summary_df.empty:
 
 
 # ── Copay monthly status banner (copay clients only) ──────────────────────────
+# Tile labels and styles aligned with 7_Copay_Manager.py STATUS_CONFIG
+_TILE_STYLE = {
+    # (copay_status, copay_note) from queries.copay_monthly_status()
+    ("Good",      None):             ("✅", "#22c55e", "#0d2318", "All Paid – No Action"),
+    ("Good",      "Copay"):          ("💳", "#a78bfa", "#1e1535", "Client Owes Copay"),
+    ("Follow up", "Exceeds Copay"): ("⚠️",  "#f59e0b", "#1f1a0d", "Insurance Underpaid"),
+    ("Follow up", "Partial Copay"): ("🔶", "#f97316", "#1f1208", "Copay Partially Collected"),
+}
+
 try:
     from src.db.queries import copay_monthly_status, get_copay_table
     _copay_clients_df   = get_copay_table(conn)
@@ -240,13 +249,6 @@ try:
         if not _client_copay.empty:
             _client_copay = _client_copay.sort_values(["yr", "mo"])
 
-            _TILE_STYLE = {
-                ("Good",      None):                ("✅", "#22c55e", "#0d2318", "Fully Paid"),
-                ("Good",      "Copay"):             ("💜", "#a78bfa", "#1e1535", "Copay"),
-                ("Follow up", "Exceeds Copay"):     ("🔴", "#ef4444", "#1f0d0d", "Exceeds Copay"),
-                ("Follow up", "Partial Copay"):     ("🔶", "#f97316", "#1f1208", "Partial Copay"),
-            }
-
             def _month_tile(row):
                 key     = (row["copay_status"], row.get("copay_note"))
                 icon, color, bg, label = _TILE_STYLE.get(key, ("❓", "#8892a4", "#1e2130", row["copay_status"]))
@@ -256,14 +258,14 @@ try:
                 copay_a = float(row.get("copay_amount", 0) or 0)
                 excess  = pending - copay_a if pending > copay_a + 1 else None
                 excess_str = (
-                    f'<div style="color:#ef4444;font-size:0.68rem;margin-top:3px;">+${excess:,.2f} excess</div>'
+                    f'<div style="color:#f59e0b;font-size:0.68rem;margin-top:3px;">+${excess:,.2f} insurance shortfall</div>'
                     if excess else ""
                 )
                 return (
                     f'<div style="background:{bg};border:1px solid {color};border-radius:10px;'
-                    f'padding:12px 14px;min-width:160px;flex:0 0 auto;">'
+                    f'padding:12px 14px;min-width:175px;flex:0 0 auto;">'
                     f'<div style="font-size:0.75rem;color:#8892a4;margin-bottom:4px;">{row["month_label"]}</div>'
-                    f'<div style="font-size:0.9rem;font-weight:700;color:{color};">{icon} {label}</div>'
+                    f'<div style="font-size:0.85rem;font-weight:700;color:{color};">{icon} {label}</div>'
                     f'<div style="font-size:0.72rem;color:#c8cfe0;margin-top:6px;">Billed: <b>${billed:,.2f}</b></div>'
                     f'<div style="font-size:0.72rem;color:#c8cfe0;">Paid: <b>${paid:,.2f}</b></div>'
                     f'<div style="font-size:0.72rem;color:{color};font-weight:600;">Pending: ${pending:,.2f}</div>'
@@ -278,13 +280,13 @@ try:
             _n_partial = int((_client_copay["copay_note"] == "Partial Copay").sum())
 
             _exceeds_badge = (
-                f"<span style='background:#1f0d0d;color:#ef4444;border:1px solid #ef4444;"
-                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} Exceeds Copay ⚠️</span>"
+                f"<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} ⚠️ Insurance Underpaid</span>"
                 if _n_exceeds > 0 else ""
             )
             _partial_badge = (
                 f"<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;"
-                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} Partial Copay</span>"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} 🔶 Copay Partially Collected</span>"
                 if _n_partial > 0 else ""
             )
 
@@ -292,10 +294,10 @@ try:
                 f"""
                 <div style='margin-bottom:1rem;'>
                     <div style='display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>
-                        <span style='font-size:1rem;font-weight:700;color:#a78bfa;'>💜 Copay Client</span>
+                        <span style='font-size:1rem;font-weight:700;color:#a78bfa;'>📋 Copay Client</span>
                         <span style='font-size:0.82rem;color:#8892a4;'>${_copay_amount:,.2f}/month</span>
-                        <span style='background:#1e1535;color:#a78bfa;border:1px solid #a78bfa;border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_copay} Copay months</span>
-                        <span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_full} Fully Paid</span>
+                        <span style='background:#1e1535;color:#a78bfa;border:1px solid #a78bfa;border-radius:5px;padding:2px 8px;font-size:0.75rem;'>💳 {_n_copay} Client Owes Copay</span>
+                        <span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;border-radius:5px;padding:2px 8px;font-size:0.75rem;'>✅ {_n_full} All Paid</span>
                         {_exceeds_badge}
                         {_partial_badge}
                     </div>
@@ -646,7 +648,10 @@ else:
         selected_week_start = consolidated_df.iloc[selected_idx]["first_dos"]
         selected_week_end = consolidated_df.iloc[selected_idx]["last_dos"]
 
-        week_claims = daily_claims_df[         (daily_claims_df["first_dos_date"] >= selected_week_start) &         (daily_claims_df["first_dos_date"] <= selected_week_end)     ].copy()
+        week_claims = daily_claims_df[
+            (daily_claims_df["first_dos_date"] >= selected_week_start) &
+            (daily_claims_df["first_dos_date"] <= selected_week_end)
+        ].copy()
         
         st.markdown(
             f"""
@@ -677,7 +682,7 @@ else:
                 "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
                 "payment_date":       st.column_config.DateColumn("Payment Date"),
                 "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
-                            "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
+                "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
                 "billed_hours":       st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
                 "paid_hours":         st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
                 "charge_amount":      st.column_config.NumberColumn("Billed $", format="$%.2f"),
@@ -688,5 +693,3 @@ else:
         )
     else:
         st.info("💡 Click on any week row in the table above to view daily claim details, TCNs, and payment dates.", icon="ℹ️")
-
-
