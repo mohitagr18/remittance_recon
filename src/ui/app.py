@@ -14,17 +14,17 @@ st.set_page_config(
 )
 
 # Define pages
-dashboard_page = st.Page("views/Dashboard.py", title="Executive Dashboard", icon="📊", default=True)
-weekly_recon_page = st.Page("views/0_Weekly_Recon.py", title="Weekly Reconciliation", icon="📋")
-client_ledger_page = st.Page("views/1_Client_Ledger.py", title="Client Ledger", icon="📒")
-analyst_workbench_page = st.Page("views/2_Analyst_Workbench.py", title="Analyst Workbench", icon="🔧")
-ai_chat_page = st.Page("views/4_AI_Chat.py", title="AI Chat", icon="💬")
+dashboard_page        = st.Page("views/Dashboard.py",            title="Executive Dashboard",    icon="📊", default=True)
+weekly_recon_page     = st.Page("views/0_Weekly_Recon.py",        title="Weekly Reconciliation",  icon="📋")
+client_ledger_page    = st.Page("views/1_Client_Ledger.py",        title="Client Ledger",          icon="📒")
+analyst_workbench_page= st.Page("views/2_Analyst_Workbench.py",   title="Analyst Workbench",      icon="🔧")
+ai_chat_page          = st.Page("views/4_AI_Chat.py",              title="AI Chat",                icon="💬")
 
-tracker_page       = st.Page("views/6_Skilled_Tracker.py", title="Skilled Billing Tracker", icon="📊")
-copay_manager_page = st.Page("views/7_Copay_Manager.py",   title="Copay Manager",           icon="📋")
+tracker_page          = st.Page("views/6_Skilled_Tracker.py",      title="Skilled Billing Tracker",icon="📊")
+copay_manager_page    = st.Page("views/7_Copay_Manager.py",        title="Copay Manager",          icon="📋")
 
-name_match_page = st.Page("views/3_Name_Match_Manager.py", title="Name Match Manager", icon="⚙️")
-data_management_page = st.Page("views/5_Data_Management.py", title="Data Management", icon="⚙️")
+name_match_page       = st.Page("views/3_Name_Match_Manager.py",   title="Name Match Manager",     icon="⚙️")
+data_management_page  = st.Page("views/5_Data_Management.py",      title="Import Data",            icon="📥")
 
 # Create navigation structure (hide default sidebar rendering)
 pg = st.navigation({
