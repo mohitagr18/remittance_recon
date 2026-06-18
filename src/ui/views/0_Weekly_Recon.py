@@ -44,31 +44,27 @@ def _copay_status_map(_conn_id: int) -> dict:
 _COPAY_MAP = _copay_status_map(id(conn))
 
 _COPAY_BADGE_CFG = {
-    ("Good",      "Copay"):         ("💜", "#a78bfa", "#1e1535"),
-    ("Good",      None):            ("✅", "#22c55e", "#0d2318"),
-    ("Follow up", "Exceeds Copay"): ("🔴", "#ef4444", "#1f0d0d"),
-    ("Follow up", "Partial Copay"): ("🔶", "#f97316", "#1f1208"),
+    ("Good",      "Copay"):         ("💜", "Copay"),
+    ("Good",      None):            ("✅", "Fully Paid"),
+    ("Follow up", "Exceeds Copay"): ("🔴", "Exceeds Copay"),
+    ("Follow up", "Partial Copay"): ("🔶", "Partial Copay"),
 }
 
 def _copay_cell(client_name: str, week_start: str) -> str:
+    """Return a plain-text emoji label for display in st.dataframe."""
     try:
         import pandas as pd
         mo_label = pd.to_datetime(week_start).strftime("%b %Y")
     except Exception:
-        return "💜 COPAY"
+        return "💜 Copay"
     key = (client_name.upper(), mo_label)
     entry = _COPAY_MAP.get(key)
     if entry is None:
-        return "💜 COPAY"
+        return "💜 Copay"
     status, note, amt = entry
-    icon, color, bg = _COPAY_BADGE_CFG.get((status, note), ("💜", "#a78bfa", "#1e1535"))
-    label = note if note else ("Fully Paid" if status == "Good" else status)
+    icon, label = _COPAY_BADGE_CFG.get((status, note), ("💜", "Copay"))
     amt_str = f" · ${amt:,.0f}/mo" if amt else ""
-    return (
-        f'<span style="background:{bg};color:{color};border:1px solid {color};'
-        f'border-radius:5px;padding:2px 8px;font-size:0.75rem;font-weight:600;white-space:nowrap;">'
-        f'{icon} {label}{amt_str}</span>'
-    )
+    return f"{icon} {label}{amt_str}"
 
 
 # ── Header ─────────────────────────────────────────────────────────────────
@@ -259,7 +255,7 @@ def render_weekly_recon(care_type: str | None = None):
             "pending_hrs":       st.column_config.NumberColumn("⏳ Pending", format="%.1f"),
             "status":            st.column_config.TextColumn("Status",       width="small"),
             "reason":            st.column_config.TextColumn("Reason",       width="medium"),
-            "copay_tag":         st.column_config.HtmlColumn("Copay Status", width="medium"),
+            "copay_tag":         st.column_config.TextColumn("Copay Status", width="medium"),
         },
         on_select="rerun",
         selection_mode="single-row",
@@ -424,4 +420,3 @@ with tab_skilled:
 
 with tab_unskilled:
     render_weekly_recon("Unskilled")
-
