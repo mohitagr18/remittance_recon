@@ -3,13 +3,14 @@ src/ui/views/7_Copay_Manager.py
 Copay Management & Reconciliation page.
 
 Two tabs:
-  1. Copay Status  — current-month first, split into Needs Action / No Action,
-                     actionable KPIs with dollar outstanding, action text as headline
+  1. Copay Status  — current-month first, split into Needs Action / No Action tables,
+                     actionable KPIs with dollar outstanding
   2. Manage Copays — CRUD panel to update amounts and effective dates
 """
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
+from datetime import date
 from pathlib import Path
 import sys
 
@@ -41,11 +42,11 @@ STATUS_CONFIG = {
     "All Paid – No Action":      {"icon": "✅", "color": "#22c55e", "bg": "#0d2318",
                                   "action": "Insurance covered 100%. Nothing outstanding."},
     "Insurance Underpaid":       {"icon": "⚠️",  "color": "#f59e0b", "bg": "#1f1a0d",
-                                  "action": "Insurance paid less than expected. Follow up with payer on the shortfall."},
+                                  "action": "Insurance paid less than expected. Follow up with payer."},
     "Copay Partially Collected": {"icon": "🔶", "color": "#f97316", "bg": "#1f1208",
                                   "action": "Client has paid part of their copay. Collect the remaining balance."},
     "Unusual – Needs Review":    {"icon": "🔴", "color": "#ef4444", "bg": "#1f0d0d",
-                                  "action": "Unexpected balance (e.g. reversal or overpayment). Review remittance records."},
+                                  "action": "Unexpected balance. Review remittance records."},
 }
 
 _INTERNAL_TO_DISPLAY = {
@@ -80,52 +81,32 @@ def _action_text(status: str, pending: float, copay: float) -> str:
     if status == "All Paid – No Action":
         return "No outstanding balance."
     if status == "Insurance Underpaid":
-        shortfall = pending - copay
-        return f"Insurance owes an additional ${shortfall:,.2f} beyond the copay. Follow up with payer."
+        return f"Follow up with payer — owes ${pending - copay:,.2f} beyond copay."
     if status == "Copay Partially Collected":
-        remaining = pending
-        return f"${remaining:,.2f} of copay still unpaid. Collect from client."
+        return f"Collect ${pending:,.2f} remaining from client."
     if status == "Unusual – Needs Review":
-        return f"Balance of ${pending:,.2f} is unexpected. Check for reversals or negative payments."
+        return f"Review — unexpected balance of ${pending:,.2f}."
     return ""
 
 
-def _badge(label: str) -> str:
-    c = STATUS_CONFIG.get(label, {"icon": "❓", "color": "#8892a4", "bg": "#1e2130"})
-    return (
-        f'<span style="background:{c["bg"]};color:{c["color"]};'
-        f'border:1px solid {c["color"]};border-radius:6px;'
-        f'padding:2px 10px;font-size:0.8rem;font-weight:600;white-space:nowrap;">'
-        f'{c["icon"]} {label}</span>'
-    )
-
-
-def _card_html(row: pd.Series, highlight: bool = False) -> str:
-    status = _status(row["pending_dollars"], row["copay_amount"])
-    c = STATUS_CONFIG.get(status, {"color": "#8892a4", "bg": "#1e2130"})
-    border = f'2px solid {c["color"]}' if highlight else '1px solid #2a2d3e'
-    bg     = c["bg"] if highlight else "#1e2130"
-    action = _action_text(status, row["pending_dollars"], row["copay_amount"])
-    action_color = c["color"] if highlight else "#8892a4"
-    return (
-        f'<div style="background:{bg};border:{border};border-radius:8px;'
-        f'padding:14px 18px;margin-bottom:8px;">'
-        # Row 1: action text as headline
-        f'<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">'
-        f'<div style="font-weight:700;color:{action_color};font-size:0.92rem;">{c["icon"]} {action}</div>'
-        f'<div>{_badge(status)}</div>'
-        f'</div>'
-        # Row 2: client + financials as supporting detail
-        f'<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:8px;">'
-        f'<div style="min-width:200px;font-weight:600;color:#e8eaf0;font-size:0.88rem;">{row["client_name"]}</div>'
-        f'<div style="color:#8892a4;font-size:0.82rem;">{row["month_label"]}</div>'
-        f'<div style="color:#c8cfe0;font-size:0.82rem;">Billed: <b>${row["total_billed_dollars"]:,.2f}</b></div>'
-        f'<div style="color:#c8cfe0;font-size:0.82rem;">Paid: <b>${row["total_paid_dollars"]:,.2f}</b></div>'
-        f'<div style="color:#c8cfe0;font-size:0.82rem;">Pending: <b>${row["pending_dollars"]:,.2f}</b></div>'
-        f'<div style="color:#8892a4;font-size:0.78rem;">Copay: ${row["copay_amount"]:,.2f}/mo</div>'
-        f'</div>'
-        f'</div>'
-    )
+def _build_display_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert raw status df into a clean display table."""
+    rows = []
+    for _, r in df.iterrows():
+        status = _status(r["pending_dollars"], r["copay_amount"])
+        cfg_s  = STATUS_CONFIG.get(status, {})
+        rows.append({
+            "Client":       r["client_name"],
+            "Month":        r["month_label"],
+            "Status":       f"{cfg_s.get('icon', '')} {status}",
+            "Action":       _action_text(status, r["pending_dollars"], r["copay_amount"]),
+            "Billed":       r["total_billed_dollars"],
+            "Paid":         r["total_paid_dollars"],
+            "Pending":      r["pending_dollars"],
+            "Copay/mo":     r["copay_amount"],
+            "_status_key":  status,
+        })
+    return pd.DataFrame(rows)
 
 
 # ── Page header ────────────────────────────────────────────────────────────
@@ -154,88 +135,91 @@ with tab1:
     else:
         df_all["status"] = df_all.apply(lambda r: _status(r["pending_dollars"], r["copay_amount"]), axis=1)
 
-        # ─ Derive month options and default to latest ─
+        # ─ Month options — default to current calendar month, fall back to latest data month ─
         month_opts = sorted(
             df_all[["yr", "mo", "month_label"]].drop_duplicates().values.tolist(),
             key=lambda x: (x[0], x[1]),
         )
         month_labels = [m[2] for m in month_opts]
-        default_month = month_labels[-1]  # most recent month
+        current_label = date.today().strftime("%b %Y")  # e.g. "Jun 2026"
+        default_month = current_label if current_label in month_labels else month_labels[-1]
 
-        # ─ Month selector + Show All toggle inline ─
+        # ─ Month selector + Show All toggle ─
         ctrl_col, toggle_col = st.columns([3, 1])
         with ctrl_col:
             sel_month = st.selectbox(
-                "📅 Month",
+                "Month",
                 options=month_labels,
-                index=len(month_labels) - 1,
+                index=month_labels.index(default_month),
                 label_visibility="collapsed",
                 key="copay_month_sel",
             )
         with toggle_col:
             show_all = st.toggle("Show all months", value=False, key="copay_show_all")
 
-        # ─ Apply filters ─
+        # ─ Filter ─
         df = df_all.copy() if show_all else df_all[df_all["month_label"] == sel_month].copy()
 
-        # ─ Actionable KPIs for selected scope ─
-        needs_attn = df[df["status"].isin(_NEEDS_ATTENTION_STATUSES)]
-        no_action  = df[df["status"].isin(_NO_ACTION_STATUSES)]
-        total_outstanding = needs_attn["pending_dollars"].sum()
+        needs_attn_df = df[df["status"].isin(_NEEDS_ATTENTION_STATUSES)]
+        no_action_df  = df[df["status"].isin(_NO_ACTION_STATUSES)]
+        total_outstanding = needs_attn_df["pending_dollars"].sum()
 
+        # ─ KPIs ─
         scope_label = "All Months" if show_all else sel_month
         k1, k2, k3 = st.columns(3)
-        k1.metric(
-            f"📅 {scope_label}",
-            f"{len(df)} clients tracked",
-        )
-        k2.metric(
-            "✅ No Action Needed",
-            f"{len(no_action)}",
-            help="Client Owes Copay (expected) or All Paid.",
-        )
-        k3.metric(
-            "⚠️ Needs Action",
-            f"{len(needs_attn)}",
-            delta=f"${total_outstanding:,.2f} outstanding" if total_outstanding > 0 else None,
-            delta_color="inverse",
-            help="Insurance Underpaid, Partially Collected, or Unusual balance.",
-        )
+        k1.metric(f"📅 {scope_label}", f"{len(df)} clients tracked")
+        k2.metric("✅ No Action Needed", f"{len(no_action_df)}",
+                  help="Client Owes Copay (expected) or All Paid.")
+        k3.metric("⚠️ Needs Action", f"{len(needs_attn_df)}",
+                  delta=f"${total_outstanding:,.2f} outstanding" if total_outstanding > 0 else None,
+                  delta_color="inverse",
+                  help="Insurance Underpaid, Partially Collected, or Unusual balance.")
 
         st.markdown("---")
 
-        # ─ Client filter (secondary) ─
-        client_opts = ["All clients"] + sorted(df["client_name"].unique().tolist())
-        sel_client = st.selectbox("Filter by client", client_opts, key="copay_client_sel", label_visibility="collapsed")
-        if sel_client != "All clients":
-            df = df[df["client_name"] == sel_client]
-            needs_attn = df[df["status"].isin(_NEEDS_ATTENTION_STATUSES)]
-            no_action  = df[df["status"].isin(_NO_ACTION_STATUSES)]
-
-        # ─ Section 1: Needs Action ─
-        if not needs_attn.empty:
-            st.markdown(
-                f"<div style='font-size:1rem;font-weight:700;color:#f59e0b;margin:12px 0 8px;'>"
-                f"⚠️ Needs Action &nbsp;&mdash;&nbsp; {len(needs_attn)} item{'s' if len(needs_attn) != 1 else ''}"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                "".join(_card_html(r, highlight=True) for _, r in needs_attn.iterrows()),
-                unsafe_allow_html=True,
+        # ─ Section 1: Needs Action table ─
+        if not needs_attn_df.empty:
+            st.markdown(f"#### ⚠️ Needs Action &nbsp;({len(needs_attn_df)})")
+            disp = _build_display_df(needs_attn_df).drop(columns=["_status_key"])
+            st.dataframe(
+                disp,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Client":   st.column_config.TextColumn("Client",   width="medium"),
+                    "Month":    st.column_config.TextColumn("Month",    width="small"),
+                    "Status":   st.column_config.TextColumn("Status",   width="medium"),
+                    "Action":   st.column_config.TextColumn("Action — what to do", width="large"),
+                    "Billed":   st.column_config.NumberColumn("Billed",   format="$%.2f"),
+                    "Paid":     st.column_config.NumberColumn("Paid",     format="$%.2f"),
+                    "Pending":  st.column_config.NumberColumn("Pending",  format="$%.2f"),
+                    "Copay/mo": st.column_config.NumberColumn("Copay/mo", format="$%.2f"),
+                },
             )
         else:
-            st.success("✅ No action needed for this month.")
+            st.success("✅ No action needed for this period.")
 
-        # ─ Section 2: No Action (collapsible) ─
-        if not no_action.empty:
-            with st.expander(f"✅ No Action Needed ({len(no_action)})", expanded=False):
-                st.markdown(
-                    "".join(_card_html(r, highlight=False) for _, r in no_action.iterrows()),
-                    unsafe_allow_html=True,
+        # ─ Section 2: No Action table (collapsed) ─
+        if not no_action_df.empty:
+            with st.expander(f"✅ No Action Needed ({len(no_action_df)})", expanded=False):
+                disp2 = _build_display_df(no_action_df).drop(columns=["_status_key"])
+                st.dataframe(
+                    disp2,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Client":   st.column_config.TextColumn("Client",   width="medium"),
+                        "Month":    st.column_config.TextColumn("Month",    width="small"),
+                        "Status":   st.column_config.TextColumn("Status",   width="medium"),
+                        "Action":   st.column_config.TextColumn("Action — what to do", width="large"),
+                        "Billed":   st.column_config.NumberColumn("Billed",   format="$%.2f"),
+                        "Paid":     st.column_config.NumberColumn("Paid",     format="$%.2f"),
+                        "Pending":  st.column_config.NumberColumn("Pending",  format="$%.2f"),
+                        "Copay/mo": st.column_config.NumberColumn("Copay/mo", format="$%.2f"),
+                    },
                 )
 
-        # ─ Legend in collapsible help section ─
+        # ─ Legend ─
         with st.expander("ℹ️ How to read this page", expanded=False):
             for label, c in STATUS_CONFIG.items():
                 st.markdown(
