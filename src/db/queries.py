@@ -56,7 +56,7 @@ def copay_monthly_status(
                     client_name_combined,
                     SUM(charge_amount)  AS charge_amount,
                     SUM(payment_amount) AS payment_amount,
-                    SUM(billed_hours)   AS billed_hours,
+                    MAX(billed_hours)   AS billed_hours,
                     SUM(paid_hours)     AS paid_hours,
                     first_dos
                 FROM remittance
@@ -547,7 +547,7 @@ def client_ledger(
         date_clauses.append("COALESCE(ra.first_dos, r.week_start_date) >= ?")
         date_params.append(start_date)
     if end_date:
-        date_clauses.append("COALESCE(ra.first_dos, r.week_start_date) <= ?")
+        date_clauses.append("COALESCE(ra.first_dos, r.week_end_date) <= ?")
         date_params.append(end_date)
     date_filter = (" AND " + " AND ".join(date_clauses)) if date_clauses else ""
 
@@ -592,7 +592,7 @@ def client_ledger(
                 client_name_combined,
                 first_dos,
                 payment_date,
-                SUM(billed_hours)   AS billed_hours,
+                MAX(billed_hours)   AS billed_hours,
                 SUM(charge_amount)  AS charge_amount,
                 SUM(paid_hours)     AS paid_hours,
                 SUM(payment_amount) AS payment_amount,
