@@ -1,8 +1,8 @@
 """
 src/db/connection.py
-DuckDB connection manager – provides read-write and read-only connections.
+DuckDB connection manager - provides read-write and read-only connections.
 
-WAL-recovery: if DuckDB raises an InternalException while replaying the WAL
+WAL-recovery: if DuckDB raises an exception while replaying the WAL
 (a known crash-recovery bug when ADD COLUMN DEFAULT is left uncommitted),
 we delete the corrupt .wal file and retry once.  The schema migration in
 create_all() is idempotent (IF NOT EXISTS / re-runs on every startup), so
@@ -19,6 +19,8 @@ import duckdb
 
 log = logging.getLogger(__name__)
 
+_WAL_REPLAY_MSG = "Failure while replaying WAL"
+
 
 def _wal_path(db_path: Path) -> Path:
     return db_path.with_suffix(db_path.suffix + ".wal")
@@ -29,11 +31,11 @@ def _connect_safe(db_path: Path, **kwargs) -> duckdb.DuckDBPyConnection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         return duckdb.connect(str(db_path), **kwargs)
-    except duckdb.duckdb.InternalException as exc:
+    except Exception as exc:
         wal = _wal_path(db_path)
-        if "Failure while replaying WAL" in str(exc) and wal.exists():
+        if _WAL_REPLAY_MSG in str(exc) and wal.exists():
             log.warning(
-                "Corrupt WAL detected at %s – deleting and retrying. "
+                "Corrupt WAL detected at %s - deleting and retrying. "
                 "Original error: %s",
                 wal,
                 exc,
