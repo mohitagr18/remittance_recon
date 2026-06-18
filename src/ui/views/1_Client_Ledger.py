@@ -65,26 +65,22 @@ def on_skilled_change():
     val = st.session_state.skilled_selector
     if val:
         st.session_state.selected_client_ledger = val
-        st.session_state.unskilled_selector = None  # Reset unskilled
+        st.session_state.unskilled_selector = None
         st.session_state.selected_care_type = "Skilled"
 
 def on_unskilled_change():
     val = st.session_state.unskilled_selector
     if val:
         st.session_state.selected_client_ledger = val
-        st.session_state.skilled_selector = None  # Reset skilled
+        st.session_state.skilled_selector = None
         st.session_state.selected_care_type = "Unskilled"
 
-# Fetch client lists by care type
 try:
     raw_skilled = conn.execute("""
         SELECT DISTINCT client_name_payroll
         FROM reconciliation
         WHERE care_type = 'Skilled' AND client_name_payroll IS NOT NULL
     """).df()["client_name_payroll"].tolist()
-    # Case-insensitive dedup: use upper() as the dedup key, keep the canonical
-    # form (prefer the version with a role suffix like LPN/RN so we strip it
-    # correctly, otherwise just take the first seen).
     def _dedup_names(names):
         seen = {}
         for n in names:
@@ -103,7 +99,6 @@ try:
     """).df()["client_name_payroll"].tolist()
     unskilled_clients = _dedup_names(raw_unskilled)
 except Exception:
-    # Fallback to all if table format differs
     clients = queries.all_clients(conn)
     def _dedup_names(names):
         seen = {}
@@ -120,7 +115,6 @@ if not skilled_clients and not unskilled_clients:
     st.info("No clients found. Run the ETL pipeline first.", icon="ℹ️")
     st.stop()
 
-# Initialize selectbox state from selected_client_ledger if set
 if st.session_state.selected_client_ledger:
     client = st.session_state.selected_client_ledger
     if st.session_state.selected_care_type is None:
@@ -136,7 +130,6 @@ if st.session_state.selected_client_ledger:
         st.session_state.unskilled_selector = client
         st.session_state.skilled_selector = None
 
-# ── Client selectors ─────────────────────────────────────────────────────────
 col_s, col_u, col_a, _ = st.columns([1.5, 1.5, 1.0, 3.0])
 
 with col_s:
@@ -168,20 +161,18 @@ selected = st.session_state.selected_client_ledger
 if not selected:
     st.stop()
 
-# ── Summary card ────────────────────────────────────────────────────────────
 summary_df = queries.client_summary(conn, selected, care_type=st.session_state.selected_care_type)
 
 if not summary_df.empty:
     row = summary_df.iloc[0]
-    ins          = row.get("insurance", "—") or "—"
-    ytd_billed   = float(row.get("ytd_billed_hrs", 0) or 0)
-    ytd_paid     = float(row.get("ytd_paid_hrs", 0) or 0)
-    ytd_payroll  = float(row.get("ytd_payroll_hrs", 0) or 0)
-    total_weeks  = int(row.get("total_weeks", 0) or 0)
-    fu_weeks     = int(row.get("followup_weeks", 0) or 0)
-    rate         = float(row.get("collection_rate_pct", 0) or 0)
-
-    ytd_pending  = float(row.get("ytd_pending_hrs", 0) or 0)
+    ins = row.get("insurance", "—") or "—"
+    ytd_billed = float(row.get("ytd_billed_hrs", 0) or 0)
+    ytd_paid = float(row.get("ytd_paid_hrs", 0) or 0)
+    ytd_payroll = float(row.get("ytd_payroll_hrs", 0) or 0)
+    total_weeks = int(row.get("total_weeks", 0) or 0)
+    fu_weeks = int(row.get("followup_weeks", 0) or 0)
+    rate = float(row.get("collection_rate_pct", 0) or 0)
+    ytd_pending = float(row.get("ytd_pending_hrs", 0) or 0)
 
     st.markdown(
         f"""
@@ -225,38 +216,34 @@ if not summary_df.empty:
         unsafe_allow_html=True,
     )
 
-
-# ── Copay monthly status banner (copay clients only) ──────────────────────────
-# Tile labels and styles aligned with 7_Copay_Manager.py STATUS_CONFIG
 _TILE_STYLE = {
-    # (copay_status, copay_note) from queries.copay_monthly_status()
-    ("Good",      None):             ("✅", "#22c55e", "#0d2318", "All Paid – No Action"),
-    ("Good",      "Copay"):          ("💳", "#a78bfa", "#1e1535", "Client Owes Copay"),
-    ("Follow up", "Exceeds Copay"): ("⚠️",  "#f59e0b", "#1f1a0d", "Insurance Underpaid"),
-    ("Follow up", "Partial Copay"): ("🔶", "#f97316", "#1f1208", "Copay Partially Collected"),
+    ("Good", None): ("✅", "#22c55e", "#0d2318", "All Paid – No Action"),
+    ("Good", "Copay"): ("💳", "#a78bfa", "#1e1535", "Copay Month Logged"),
+    ("Follow up", "Exceeds Copay"): ("⚠️", "#f59e0b", "#1f1a0d", "Insurance Underpaid"),
+    ("Follow up", "Partial Copay"): ("🔶", "#f97316", "#1f1208", "Partial Copay Month"),
 }
 
 try:
     from src.db.queries import copay_monthly_status, get_copay_table
-    _copay_clients_df   = get_copay_table(conn)
-    _copay_names        = set(_copay_clients_df["client_name"].str.upper().tolist()) if not _copay_clients_df.empty else set()
-    _is_copay_client    = selected.upper() in _copay_names
+    _copay_clients_df = get_copay_table(conn)
+    _copay_names = set(_copay_clients_df["client_name"].str.upper().tolist()) if not _copay_clients_df.empty else set()
+    _is_copay_client = selected.upper() in _copay_names
 
     if _is_copay_client:
-        _copay_df      = copay_monthly_status(conn)
-        _client_copay  = _copay_df[_copay_df["client_name"].str.upper() == selected.upper()].copy()
+        _copay_df = copay_monthly_status(conn)
+        _client_copay = _copay_df[_copay_df["client_name"].str.upper() == selected.upper()].copy()
 
         if not _client_copay.empty:
             _client_copay = _client_copay.sort_values(["yr", "mo"])
 
             def _month_tile(row):
-                key     = (row["copay_status"], row.get("copay_note"))
+                key = (row["copay_status"], row.get("copay_note"))
                 icon, color, bg, label = _TILE_STYLE.get(key, ("❓", "#8892a4", "#1e2130", row["copay_status"]))
                 pending = float(row.get("pending_dollars", 0) or 0)
-                billed  = float(row.get("total_billed_dollars", 0) or 0)
-                paid    = float(row.get("total_paid_dollars", 0) or 0)
+                billed = float(row.get("total_billed_dollars", 0) or 0)
+                paid = float(row.get("total_paid_dollars", 0) or 0)
                 copay_a = float(row.get("copay_amount", 0) or 0)
-                excess  = pending - copay_a if pending > copay_a + 1 else None
+                excess = pending - copay_a if pending > copay_a + 1 else None
                 excess_str = (
                     f'<div style="color:#f59e0b;font-size:0.68rem;margin-top:3px;">+${excess:,.2f} insurance shortfall</div>'
                     if excess else ""
@@ -274,19 +261,19 @@ try:
                 )
 
             _copay_amount = float(_client_copay.iloc[0].get("copay_amount", 0) or 0)
-            _n_copay   = int((_client_copay["copay_note"] == "Copay").sum())
-            _n_full    = int((_client_copay["copay_note"].isna() & (_client_copay["copay_status"] == "Good")).sum())
+            _n_copay = int((_client_copay["copay_note"] == "Copay").sum())
+            _n_full = int((_client_copay["copay_note"].isna() & (_client_copay["copay_status"] == "Good")).sum())
             _n_exceeds = int((_client_copay["copay_note"] == "Exceeds Copay").sum())
             _n_partial = int((_client_copay["copay_note"] == "Partial Copay").sum())
 
-            _exceeds_badge = (
+            _insurance_badge = (
                 f"<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;"
                 f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} ⚠️ Insurance Underpaid</span>"
                 if _n_exceeds > 0 else ""
             )
-            _partial_badge = (
+            _review_badge = (
                 f"<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;"
-                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} 🔶 Copay Partially Collected</span>"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} 🔶 Partial Copay Months</span>"
                 if _n_partial > 0 else ""
             )
 
@@ -296,10 +283,9 @@ try:
                     <div style='display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>
                         <span style='font-size:1rem;font-weight:700;color:#a78bfa;'>📋 Copay Client</span>
                         <span style='font-size:0.82rem;color:#8892a4;'>${_copay_amount:,.2f}/month</span>
-                        <span style='background:#1e1535;color:#a78bfa;border:1px solid #a78bfa;border-radius:5px;padding:2px 8px;font-size:0.75rem;'>💳 {_n_copay} Client Owes Copay</span>
                         <span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;border-radius:5px;padding:2px 8px;font-size:0.75rem;'>✅ {_n_full} All Paid</span>
-                        {_exceeds_badge}
-                        {_partial_badge}
+                        {_insurance_badge}
+                        {_review_badge}
                     </div>
                     <div style='display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;'>
                         {"".join(_month_tile(row) for _, row in _client_copay.iterrows())}
@@ -309,9 +295,8 @@ try:
                 unsafe_allow_html=True,
             )
 except Exception:
-    pass  # Never crash the ledger if copay data is unavailable
+    pass
 
-# ── Weekly billed vs paid chart & pending hours chart ────────────────────────
 client_recon = queries.client_weekly_recon_with_dos(conn, selected, care_type=st.session_state.selected_care_type)
 
 if "client_chart_rev" not in st.session_state:
@@ -353,7 +338,6 @@ if not client_recon.empty:
             key=active_client_chart_key,
         )
 
-# Parse chart selection
 selected_week = None
 if active_client_chart_key in st.session_state and st.session_state[active_client_chart_key]:
     sel = st.session_state[active_client_chart_key]
@@ -366,7 +350,6 @@ if active_client_chart_key in st.session_state and st.session_state[active_clien
             except Exception:
                 pass
 
-# ── Full remittance ledger ──────────────────────────────────────────────────
 st.markdown(
     "<div class='section-header'><h3>🧾 Payment Ledger</h3></div>",
     unsafe_allow_html=True,
@@ -383,7 +366,6 @@ if selected_week:
         st.session_state["client_chart_rev"] += 1
         st.rerun()
 
-# Try with remittance name if we have it
 rem_name = selected
 if not summary_df.empty and "client_name_remittance" in summary_df.columns:
     alt = summary_df.iloc[0].get("client_name_remittance")
@@ -399,25 +381,23 @@ if selected_week:
     week_end_date = selected_week + datetime.timedelta(days=6)
     ledger_df["first_dos_date"] = pd.to_datetime(ledger_df["first_dos"]).dt.date
     ledger_df = ledger_df[
-        (ledger_df["first_dos_date"] >= selected_week) & 
+        (ledger_df["first_dos_date"] >= selected_week) &
         (ledger_df["first_dos_date"] <= week_end_date)
     ]
 
-# Apply Archive filter to Payment Ledger
 if not show_archived:
     import datetime
     one_year_and_week_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
     ledger_df = ledger_df[pd.to_datetime(ledger_df["first_dos"]) >= pd.to_datetime(one_year_and_week_ago)]
 
 if not ledger_df.empty:
-    # Fill NaNs and do baseline calculations BEFORE filtering
     ledger_df["tcn"] = ledger_df["tcn"].fillna("—")
     ledger_df["billed_hours"] = ledger_df["billed_hours"].fillna(0.0).astype(float)
     ledger_df["paid_hours"] = ledger_df["paid_hours"].fillna(0.0).astype(float)
     ledger_df["charge_amount"] = ledger_df["charge_amount"].fillna(0.0).astype(float)
     ledger_df["payment_amount"] = ledger_df["payment_amount"].fillna(0.0).astype(float)
     ledger_df["amt_delta"] = ledger_df["charge_amount"] - ledger_df["payment_amount"]
-    
+
     ledger_df["week_payroll_hours"] = ledger_df["week_payroll_hours"].fillna(0.0).astype(float)
     ledger_df["week_paid_hours"] = ledger_df["week_paid_hours"].fillna(0.0).astype(float)
     ledger_df["week_pending_hrs"] = (ledger_df["week_payroll_hours"] - ledger_df["week_paid_hours"]).clip(lower=0.0).round(2)
@@ -426,12 +406,12 @@ if not ledger_df.empty:
         tcn_val = row.get("tcn")
         if pd.isna(tcn_val) or tcn_val == "—" or tcn_val is None:
             return "No Remittance Received"
-            
+
         b_hrs = row.get("billed_hours", 0) or 0
         p_hrs = row.get("paid_hours", 0) or 0
         b_amt = row.get("charge_amount", 0) or 0
         p_amt = row.get("payment_amount", 0) or 0
-        
+
         if p_hrs < 0 or p_amt < 0:
             return "Reversal"
         if b_hrs > 0:
@@ -456,7 +436,6 @@ if not ledger_df.empty:
 
     ledger_df["reconciled_status"] = ledger_df.apply(compute_rec_status, axis=1)
 
-    # Map first_dos to Wednesday-start week to group daily claims of the same week together
     import datetime
     def to_week_start(val):
         if pd.isna(val):
@@ -468,7 +447,6 @@ if not ledger_df.empty:
     ledger_df["week_start"] = ledger_df["first_dos"].apply(to_week_start)
     ledger_df["week_end"] = ledger_df["week_start"].apply(lambda d: d + datetime.timedelta(days=6) if d else None)
 
-    # Save a clean copy of daily claims for drilldown details
     daily_claims_df = ledger_df.copy()
 
     def get_tcn_display(group):
@@ -488,11 +466,9 @@ if not ledger_df.empty:
             return None
         if len(dates) == 1:
             return dates[0]
-        # Multiple payment dates - show all sorted
         sorted_dates = sorted(dates)
         if len(sorted_dates) <= 3:
             return ", ".join(str(d) for d in sorted_dates)
-        # If more than 3, show first and last with count
         return f"{sorted_dates[0]} ... {sorted_dates[-1]} ({len(sorted_dates)} payments)"
 
     def get_status_display(group):
@@ -509,13 +485,11 @@ if not ledger_df.empty:
             elif status == "Payer Reversal":
                 return "Payer Reversal"
             return status
-        # ── Paid Extra override: if paid > payroll after all transactions ──
         p_hrs_chk = float(group["week_payroll_hours"].iloc[0] or 0.0)
         pd_hrs_chk = float(group["week_paid_hours"].iloc[0] or 0.0)
         if p_hrs_chk > 0 and pd_hrs_chk > p_hrs_chk + 0.9:
             return "Paid Extra"
-        
-        # Fallback to computing from hours:
+
         p_hrs = float(group["week_payroll_hours"].iloc[0] or 0.0)
         b_hrs = float(group["week_billed_hours"].iloc[0] or 0.0)
         pd_hrs = float(group["week_paid_hours"].iloc[0] or 0.0)
@@ -541,8 +515,7 @@ if not ledger_df.empty:
     for (w_start, w_end), group in ledger_df.groupby(["week_start", "week_end"]):
         w_billed_hrs = group["week_billed_hours"].iloc[0]
         w_paid_hrs = group["week_paid_hours"].iloc[0]
-        
-        # Find hourly rate from the claims in this group
+
         rate = None
         for _, r in group.iterrows():
             b_hrs = abs(float(r.get("billed_hours") or 0.0))
@@ -557,7 +530,7 @@ if not ledger_df.empty:
                 if p_hrs > 0.1 and pay > 0.0:
                     rate = pay / p_hrs
                     break
-        
+
         sum_payment = group["payment_amount"].sum()
         if abs(w_billed_hrs - w_paid_hrs) <= 0.01:
             charge_amount = sum_payment
@@ -565,7 +538,7 @@ if not ledger_df.empty:
             charge_amount = round(w_billed_hrs * rate, 2)
         else:
             charge_amount = group["charge_amount"].max()
-        
+
         consolidated.append({
             "first_dos": w_start,
             "last_dos": w_end,
@@ -580,7 +553,7 @@ if not ledger_df.empty:
             "amt_delta": max(round(charge_amount - sum_payment, 2), 0.0),
             "tcn": get_tcn_display(group),
         })
-    
+
     consolidated_df = pd.DataFrame(consolidated)
     if not consolidated_df.empty:
         consolidated_df = consolidated_df.sort_values("first_dos", ascending=False)
@@ -589,11 +562,11 @@ if not ledger_df.empty:
     if show_unpaid_only and not consolidated_df.empty:
         is_payroll_week = consolidated_df["week_payroll_hours"].fillna(0.0).astype(float) > 0.0
         is_unresolved_payroll = (
-            is_payroll_week & 
+            is_payroll_week &
             (consolidated_df["paid_hours"].fillna(0.0).astype(float) < consolidated_df["week_payroll_hours"].fillna(0.0).astype(float) - 0.9)
         )
         is_unresolved_remit = (
-            ~is_payroll_week & 
+            ~is_payroll_week &
             (consolidated_df["paid_hours"].fillna(0.0).astype(float) < consolidated_df["billed_hours"].fillna(0.0).astype(float) - 0.9)
         )
         consolidated_df = consolidated_df[is_unresolved_payroll | is_unresolved_remit]
@@ -624,24 +597,23 @@ else:
         selection_mode="single-row",
         height=min((len(consolidated_df) + 1) * 35 + 3, 350),
         column_config={
-            "first_dos":          st.column_config.DateColumn("First DOS"),
-            "last_dos":           st.column_config.DateColumn("Last DOS"),
-            "payment_date":       st.column_config.TextColumn("Payment Date"),
-            "reconciled_status":  st.column_config.TextColumn("Status", width="medium"),
+            "first_dos": st.column_config.DateColumn("First DOS"),
+            "last_dos": st.column_config.DateColumn("Last DOS"),
+            "payment_date": st.column_config.TextColumn("Payment Date"),
+            "reconciled_status": st.column_config.TextColumn("Status", width="medium"),
             "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
-            "billed_hours":       st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
-            "paid_hours":         st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
-            "week_pending_hrs":   st.column_config.NumberColumn("Pending Hrs", format="%.1f"),
-            "charge_amount":      st.column_config.NumberColumn("Billed $", format="$%.2f"),
-            "payment_amount":     st.column_config.NumberColumn("Paid $", format="$%.2f"),
-            "amt_delta":          st.column_config.NumberColumn("$ Delta", format="$%.2f"),
-            "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
+            "billed_hours": st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
+            "paid_hours": st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
+            "week_pending_hrs": st.column_config.NumberColumn("Pending Hrs", format="%.1f"),
+            "charge_amount": st.column_config.NumberColumn("Billed $", format="$%.2f"),
+            "payment_amount": st.column_config.NumberColumn("Paid $", format="$%.2f"),
+            "amt_delta": st.column_config.NumberColumn("$ Delta", format="$%.2f"),
+            "tcn": st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
         },
         key="consolidated_ledger_table",
     )
     st.caption(f"{len(consolidated_df):,} weeks tracked in ledger")
 
-    # Display drilldown if a week is selected
     selected_rows = selection.selection.rows if selection.selection else []
     if selected_rows:
         selected_idx = selected_rows[0]
@@ -652,7 +624,7 @@ else:
             (daily_claims_df["first_dos_date"] >= selected_week_start) &
             (daily_claims_df["first_dos_date"] <= selected_week_end)
         ].copy()
-        
+
         st.markdown(
             f"""
             <div style='margin-top:1.5rem;margin-bottom:0.5rem;'>
@@ -670,7 +642,7 @@ else:
             "billed_hours", "paid_hours",
             "charge_amount", "payment_amount", "amt_delta", "tcn"
         ]
-        
+
         week_claims = week_claims.sort_values("first_dos")
 
         st.dataframe(
@@ -679,16 +651,16 @@ else:
             hide_index=True,
             height=min((len(week_claims) + 1) * 35 + 3, 250),
             column_config={
-                "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
-                "payment_date":       st.column_config.DateColumn("Payment Date"),
-                "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
+                "first_dos": st.column_config.DateColumn("Date of Service (DOS)"),
+                "payment_date": st.column_config.DateColumn("Payment Date"),
+                "reconciled_status": st.column_config.TextColumn("Daily Status", width="medium"),
                 "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
-                "billed_hours":       st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
-                "paid_hours":         st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
-                "charge_amount":      st.column_config.NumberColumn("Billed $", format="$%.2f"),
-                "payment_amount":     st.column_config.NumberColumn("Paid $", format="$%.2f"),
-                "amt_delta":          st.column_config.NumberColumn("$ Delta", format="$%.2f"),
-                "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
+                "billed_hours": st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
+                "paid_hours": st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
+                "charge_amount": st.column_config.NumberColumn("Billed $", format="$%.2f"),
+                "payment_amount": st.column_config.NumberColumn("Paid $", format="$%.2f"),
+                "amt_delta": st.column_config.NumberColumn("$ Delta", format="$%.2f"),
+                "tcn": st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
             }
         )
     else:

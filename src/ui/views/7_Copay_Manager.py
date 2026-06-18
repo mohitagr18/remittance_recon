@@ -3,8 +3,8 @@ src/ui/views/7_Copay_Manager.py
 Copay Management & Reconciliation page.
 
 Two tabs:
-  1. Copay Status  — current-month first, split into Needs Action / No Action tables,
-                     actionable KPIs with dollar outstanding
+  1. Copay Status  — insurance-first view focused on payer shortfalls,
+                     with non-insurance items collapsed separately
   2. Manage Copays — CRUD panel to update amounts and effective dates
 """
 from __future__ import annotations
@@ -33,18 +33,17 @@ def _conn():
 
 inject_css()
 
-# ── Constants ───────────────────────────────────────────────────────────────
 COPAY_TOL = 1.00
 
 STATUS_CONFIG = {
     "Client Owes Copay":         {"icon": "💳", "color": "#a78bfa", "bg": "#1e1535",
-                                  "action": "Expected outcome — client owes their monthly copay share."},
+                                  "action": "Copay due from client."},
     "All Paid – No Action":      {"icon": "✅", "color": "#22c55e", "bg": "#0d2318",
-                                  "action": "Insurance covered 100%. Nothing outstanding."},
+                                  "action": "No outstanding balance."},
     "Insurance Underpaid":       {"icon": "⚠️",  "color": "#f59e0b", "bg": "#1f1a0d",
                                   "action": "Insurance paid less than expected. Follow up with payer."},
     "Copay Partially Collected": {"icon": "🔶", "color": "#f97316", "bg": "#1f1208",
-                                  "action": "Client has paid part of their copay. Collect the remaining balance."},
+                                  "action": "Client paid only part of the copay."},
     "Unusual – Needs Review":    {"icon": "🔴", "color": "#ef4444", "bg": "#1f0d0d",
                                   "action": "Unexpected balance. Review remittance records."},
 }
@@ -57,8 +56,8 @@ _INTERNAL_TO_DISPLAY = {
     "Follow Up":     "Unusual – Needs Review",
 }
 
-_NO_ACTION_STATUSES       = {"Client Owes Copay", "All Paid – No Action"}
-_NEEDS_ATTENTION_STATUSES = {"Insurance Underpaid", "Copay Partially Collected", "Unusual – Needs Review"}
+_NON_INSURANCE_STATUSES = {"Client Owes Copay", "Copay Partially Collected", "All Paid – No Action"}
+_INSURANCE_STATUSES = {"Insurance Underpaid", "Unusual – Needs Review"}
 
 
 def _status(pending: float, copay: float) -> str:
@@ -75,47 +74,82 @@ def _status(pending: float, copay: float) -> str:
     return _INTERNAL_TO_DISPLAY[internal]
 
 
+def _insurance_shortfall(status: str, pending: float, copay: float) -> float:
+    if status == "Insurance Underpaid":
+        return max(round(pending - copay, 2), 0.0)
+    if status == "Unusual – Needs Review":
+        return max(round(pending, 2), 0.0)
+    return 0.0
+
+
 def _action_text(status: str, pending: float, copay: float) -> str:
+    if status == "Insurance Underpaid":
+        return f"Follow up with payer — owes ${max(pending - copay, 0):,.2f}."
+    if status == "Unusual – Needs Review":
+        return f"Review remittance — unexpected balance of ${pending:,.2f}."
     if status == "Client Owes Copay":
-        return f"Collect ${copay:,.2f} copay from client."
+        return f"Copay month logged (${copay:,.2f})."
+    if status == "Copay Partially Collected":
+        return f"Partial copay month logged (${pending:,.2f} open)."
     if status == "All Paid – No Action":
         return "No outstanding balance."
-    if status == "Insurance Underpaid":
-        return f"Follow up with payer — owes ${pending - copay:,.2f} beyond copay."
-    if status == "Copay Partially Collected":
-        return f"Collect ${pending:,.2f} remaining from client."
-    if status == "Unusual – Needs Review":
-        return f"Review — unexpected balance of ${pending:,.2f}."
     return ""
 
 
 def _build_display_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert raw status df into a clean display table."""
     rows = []
     for _, r in df.iterrows():
         status = _status(r["pending_dollars"], r["copay_amount"])
-        cfg_s  = STATUS_CONFIG.get(status, {})
+        cfg_s = STATUS_CONFIG.get(status, {})
         rows.append({
-            "Client":       r["client_name"],
-            "Month":        r["month_label"],
-            "Status":       f"{cfg_s.get('icon', '')} {status}",
-            "Action":       _action_text(status, r["pending_dollars"], r["copay_amount"]),
-            "Billed":       r["total_billed_dollars"],
-            "Paid":         r["total_paid_dollars"],
-            "Pending":      r["pending_dollars"],
-            "Copay/mo":     r["copay_amount"],
-            "_status_key":  status,
+            "Client":              r["client_name"],
+            "Insurance":           r.get("insurance", "—") or "—",
+            "Month":               r["month_label"],
+            "Status":              f"{cfg_s.get('icon', '')} {status}",
+            "Action":              _action_text(status, r["pending_dollars"], r["copay_amount"]),
+            "Insurance Shortfall": _insurance_shortfall(status, r["pending_dollars"], r["copay_amount"]),
+            "Billed":              r["total_billed_dollars"],
+            "Paid":                r["total_paid_dollars"],
+            "Pending":             r["pending_dollars"],
+            "Copay/mo":            r["copay_amount"],
+            "_status_key":         status,
         })
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out = out.sort_values(["Insurance Shortfall", "Insurance", "Client", "Month"], ascending=[False, True, True, True])
+    return out
 
 
-# ── Page header ────────────────────────────────────────────────────────────
+def _build_payer_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["Payer", "Clients Affected", "Open Months", "Total Insurance Shortfall", "Oldest Open Month"])
+    tmp = _build_display_df(df)
+    grp = tmp.groupby("Insurance", dropna=False).agg(
+        clients_affected=("Client", "nunique"),
+        open_months=("Month", "count"),
+        total_shortfall=("Insurance Shortfall", "sum"),
+    ).reset_index()
+    month_order = {m: i for i, m in enumerate(["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], start=1)}
+    oldest = df.copy()
+    oldest["_sort"] = oldest["yr"] * 100 + oldest["mo"]
+    oldest = oldest.sort_values("_sort").groupby("insurance", dropna=False).first().reset_index()
+    oldest = oldest[["insurance", "month_label"]].rename(columns={"insurance": "Insurance", "month_label": "Oldest Open Month"})
+    grp = grp.merge(oldest, on="Insurance", how="left")
+    grp = grp.rename(columns={
+        "Insurance": "Payer",
+        "clients_affected": "Clients Affected",
+        "open_months": "Open Months",
+        "total_shortfall": "Total Insurance Shortfall",
+    }).sort_values("Total Insurance Shortfall", ascending=False)
+    return grp
+
+
 st.markdown(
     """
     <div style='margin-bottom:1.2rem;'>
         <h1 style='margin:0;font-size:1.5rem;font-weight:700;color:#e8eaf0;'>📋 Copay Manager</h1>
         <div style='font-size:0.82rem;color:#8892a4;margin-top:4px;'>
-            Monthly copay reconciliation — track what clients and insurers owe each month.
+            Monthly copay reconciliation — prioritize insurance shortfalls first.
         </div>
     </div>
     """,
@@ -124,8 +158,6 @@ st.markdown(
 
 tab1, tab2 = st.tabs(["📊 Copay Status", "⚙️ Manage Copays"])
 
-
-# ── Tab 1: Copay Status ───────────────────────────────────────────────────────
 with tab1:
     conn = _conn()
     df_all = queries.copay_monthly_status(conn)
@@ -135,16 +167,14 @@ with tab1:
     else:
         df_all["status"] = df_all.apply(lambda r: _status(r["pending_dollars"], r["copay_amount"]), axis=1)
 
-        # ─ Month options — default to current calendar month, fall back to latest data month ─
         month_opts = sorted(
             df_all[["yr", "mo", "month_label"]].drop_duplicates().values.tolist(),
             key=lambda x: (x[0], x[1]),
         )
         month_labels = [m[2] for m in month_opts]
-        current_label = date.today().strftime("%b %Y")  # e.g. "Jun 2026"
+        current_label = date.today().strftime("%b %Y")
         default_month = current_label if current_label in month_labels else month_labels[-1]
 
-        # ─ Month selector + Show All toggle ─
         ctrl_col, toggle_col = st.columns([3, 1])
         with ctrl_col:
             sel_month = st.selectbox(
@@ -157,81 +187,82 @@ with tab1:
         with toggle_col:
             show_all = st.toggle("Show all months", value=False, key="copay_show_all")
 
-        # ─ Filter ─
         df = df_all.copy() if show_all else df_all[df_all["month_label"] == sel_month].copy()
 
-        needs_attn_df = df[df["status"].isin(_NEEDS_ATTENTION_STATUSES)]
-        no_action_df  = df[df["status"].isin(_NO_ACTION_STATUSES)]
-        total_outstanding = needs_attn_df["pending_dollars"].sum()
+        insurance_df = df[df["status"].isin(_INSURANCE_STATUSES)].copy()
+        non_insurance_df = df[df["status"].isin(_NON_INSURANCE_STATUSES)].copy()
+        total_shortfall = float(sum(_insurance_shortfall(r["status"], r["pending_dollars"], r["copay_amount"]) for _, r in insurance_df.iterrows()))
+        affected_clients = int(insurance_df["client_name"].nunique()) if not insurance_df.empty else 0
 
-        # ─ KPIs ─
         scope_label = "All Months" if show_all else sel_month
         k1, k2, k3 = st.columns(3)
-        k1.metric(f"📅 {scope_label}", f"{len(df)} clients tracked")
-        k2.metric("✅ No Action Needed", f"{len(no_action_df)}",
-                  help="Client Owes Copay (expected) or All Paid.")
-        k3.metric("⚠️ Needs Action", f"{len(needs_attn_df)}",
-                  delta=f"${total_outstanding:,.2f} outstanding" if total_outstanding > 0 else None,
-                  delta_color="inverse",
-                  help="Insurance Underpaid, Partially Collected, or Unusual balance.")
+        k1.metric(f"📅 {scope_label}", f"{affected_clients} clients with insurance issues")
+        k2.metric("🏢 Payers Owing", f"{insurance_df['insurance'].fillna('—').nunique() if not insurance_df.empty else 0}")
+        k3.metric("⚠️ Insurance Shortfall", f"${total_shortfall:,.2f}", help="Amount to follow up with insurers, net of assumed copay.")
 
         st.markdown("---")
 
-        # ─ Section 1: Needs Action table ─
-        if not needs_attn_df.empty:
-            st.markdown(f"#### ⚠️ Needs Action &nbsp;({len(needs_attn_df)})")
-            disp = _build_display_df(needs_attn_df).drop(columns=["_status_key"])
+        if not insurance_df.empty:
+            payer_summary = _build_payer_summary(insurance_df)
+            st.markdown(f"#### 🏢 Payer Summary")
             st.dataframe(
-                disp,
+                payer_summary,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "Client":   st.column_config.TextColumn("Client",   width="medium"),
-                    "Month":    st.column_config.TextColumn("Month",    width="small"),
-                    "Status":   st.column_config.TextColumn("Status",   width="medium"),
-                    "Action":   st.column_config.TextColumn("Action — what to do", width="large"),
-                    "Billed":   st.column_config.NumberColumn("Billed",   format="$%.2f"),
-                    "Paid":     st.column_config.NumberColumn("Paid",     format="$%.2f"),
-                    "Pending":  st.column_config.NumberColumn("Pending",  format="$%.2f"),
-                    "Copay/mo": st.column_config.NumberColumn("Copay/mo", format="$%.2f"),
+                    "Payer": st.column_config.TextColumn("Payer", width="medium"),
+                    "Clients Affected": st.column_config.NumberColumn("Clients Affected"),
+                    "Open Months": st.column_config.NumberColumn("Open Months"),
+                    "Total Insurance Shortfall": st.column_config.NumberColumn("Total Insurance Shortfall", format="$%.2f"),
+                    "Oldest Open Month": st.column_config.TextColumn("Oldest Open Month"),
+                },
+            )
+
+            st.markdown(f"#### ⚠️ Insurance Follow-Up Detail ({len(insurance_df)})")
+            detail = _build_display_df(insurance_df).drop(columns=["_status_key", "Pending", "Copay/mo"])
+            st.dataframe(
+                detail,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Client": st.column_config.TextColumn("Client", width="medium"),
+                    "Insurance": st.column_config.TextColumn("Payer", width="medium"),
+                    "Month": st.column_config.TextColumn("Month", width="small"),
+                    "Status": st.column_config.TextColumn("Status", width="medium"),
+                    "Action": st.column_config.TextColumn("Action — what to do", width="large"),
+                    "Insurance Shortfall": st.column_config.NumberColumn("Insurance Shortfall", format="$%.2f"),
+                    "Billed": st.column_config.NumberColumn("Billed", format="$%.2f"),
+                    "Paid": st.column_config.NumberColumn("Paid", format="$%.2f"),
                 },
             )
         else:
-            st.success("✅ No action needed for this period.")
+            st.success("✅ No insurance shortfalls for this period.")
 
-        # ─ Section 2: No Action table (collapsed) ─
-        if not no_action_df.empty:
-            with st.expander(f"✅ No Action Needed ({len(no_action_df)})", expanded=False):
-                disp2 = _build_display_df(no_action_df).drop(columns=["_status_key"])
+        if not non_insurance_df.empty:
+            with st.expander(f"📁 Other Copay Months ({len(non_insurance_df)})", expanded=False):
+                other = _build_display_df(non_insurance_df).drop(columns=["_status_key", "Insurance Shortfall"])
                 st.dataframe(
-                    disp2,
+                    other,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Client":   st.column_config.TextColumn("Client",   width="medium"),
-                        "Month":    st.column_config.TextColumn("Month",    width="small"),
-                        "Status":   st.column_config.TextColumn("Status",   width="medium"),
-                        "Action":   st.column_config.TextColumn("Action — what to do", width="large"),
-                        "Billed":   st.column_config.NumberColumn("Billed",   format="$%.2f"),
-                        "Paid":     st.column_config.NumberColumn("Paid",     format="$%.2f"),
-                        "Pending":  st.column_config.NumberColumn("Pending",  format="$%.2f"),
+                        "Client": st.column_config.TextColumn("Client", width="medium"),
+                        "Insurance": st.column_config.TextColumn("Payer", width="medium"),
+                        "Month": st.column_config.TextColumn("Month", width="small"),
+                        "Status": st.column_config.TextColumn("Status", width="medium"),
+                        "Action": st.column_config.TextColumn("Reference", width="large"),
+                        "Billed": st.column_config.NumberColumn("Billed", format="$%.2f"),
+                        "Paid": st.column_config.NumberColumn("Paid", format="$%.2f"),
+                        "Pending": st.column_config.NumberColumn("Pending", format="$%.2f"),
                         "Copay/mo": st.column_config.NumberColumn("Copay/mo", format="$%.2f"),
                     },
                 )
 
-        # ─ Legend ─
         with st.expander("ℹ️ How to read this page", expanded=False):
-            for label, c in STATUS_CONFIG.items():
-                st.markdown(
-                    f'<span style="background:{c["bg"]};color:{c["color"]};border:1px solid {c["color"]};'
-                    f'border-radius:6px;padding:2px 10px;font-size:0.8rem;font-weight:600;">'
-                    f'{c["icon"]} {label}</span>&nbsp;&nbsp;{c["action"]}',
-                    unsafe_allow_html=True,
-                )
-                st.markdown("")
+            st.markdown("- **Insurance Underpaid**: insurer owes money beyond the assumed copay amount.")
+            st.markdown("- **Unusual – Needs Review**: balance is unexpected and should be reviewed manually.")
+            st.markdown("- **Other Copay Months**: client-copay-oriented rows kept for reference, not primary follow-up.")
 
-
-# ── Tab 2: Manage Copay Amounts & Dates ──────────────────────────────────────────
 with tab2:
     st.subheader("Copay Client Management")
     st.caption("Update monthly copay amounts and effective date ranges. Leave dates blank if unknown.")
@@ -273,11 +304,11 @@ with tab2:
     st.subheader("➕ Add New Copay Client")
     with st.form("add_new"):
         a1, a2 = st.columns(2)
-        new_name  = a1.text_input("Client Name (LAST, FIRST format)")
+        new_name = a1.text_input("Client Name (LAST, FIRST format)")
         new_copay = a2.number_input("Monthly Copay ($)", min_value=0.0, step=0.01, format="%.2f")
-        b1, b2    = st.columns(2)
+        b1, b2 = st.columns(2)
         nf = b1.date_input("Effective From", value=None)
-        nt = b2.date_input("Effective To",   value=None)
+        nt = b2.date_input("Effective To", value=None)
         if st.form_submit_button("➕ Add Client"):
             if new_name.strip():
                 max_id = conn.execute("SELECT COALESCE(MAX(id),0) FROM copay_clients").fetchone()[0]
