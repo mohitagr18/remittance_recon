@@ -55,7 +55,7 @@ if "selected_care_type" not in st.session_state:
 # Suffix cleaning regex pattern
 import re
 _ROLE_SUFFIX = re.compile(
-    r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$",
+    r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\)|Live-?[Ii]n)$",
     re.IGNORECASE,
 )
 def strip_suffix(name: str) -> str:

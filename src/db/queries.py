@@ -580,7 +580,7 @@ def client_ledger(
                 OR UPPER(client_name_combined) IN (
                     SELECT DISTINCT UPPER(client_name_remittance)
                     FROM reconciliation
-                    WHERE UPPER(regexp_replace(client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\))$', '')) = UPPER(?)
+                    WHERE UPPER(regexp_replace(client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\)|Live-?[Ii]n|LIVE-?IN)$', '')) = UPPER(?)
                        OR UPPER(client_name_remittance) = UPPER(?)
                 )
             )
@@ -653,7 +653,7 @@ def client_ledger(
         )
         WHERE (
             UPPER(ra.client_name_combined) = UPPER(?)
-            OR UPPER(regexp_replace(r.client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\))$', '')) = UPPER(?)
+            OR UPPER(regexp_replace(r.client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\)|Live-?[Ii]n|LIVE-?IN)$', '')) = UPPER(?)
             OR UPPER(r.client_name_remittance) = UPPER(?)
         )
         {date_filter}
@@ -686,7 +686,7 @@ def client_weekly_recon_with_dos(
 
     clauses = [
         """(
-            UPPER(regexp_replace(r.client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\))$', '')) = UPPER(?)
+            UPPER(regexp_replace(r.client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\)|Live-?[Ii]n|LIVE-?IN)$', '')) = UPPER(?)
             OR UPPER(r.client_name_remittance) = UPPER(?)
         )"""
     ]
@@ -746,7 +746,7 @@ def client_summary(conn: duckdb.DuckDBPyConnection, client_name: str, care_type:
             COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_weeks,
             ROUND(100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1) AS collection_rate_pct
         FROM reconciliation
-        WHERE (UPPER(regexp_replace(client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\))$', '')) = UPPER(?)
+        WHERE (UPPER(regexp_replace(client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\)|Live-?[Ii]n|LIVE-?IN)$', '')) = UPPER(?)
            OR UPPER(client_name_remittance) = UPPER(?))
            {care_clause}
         GROUP BY insurance
