@@ -56,7 +56,7 @@ def _load_status() -> pd.DataFrame:
         ),
         monthly AS (
             SELECT
-                r.client_name_payroll                           AS client_name,
+                regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', '') AS client_name,
                 cc.copay_amount,
                 DATE_PART('year',  r.week_start_date)::INT     AS yr,
                 DATE_PART('month', r.week_start_date)::INT     AS mo,
