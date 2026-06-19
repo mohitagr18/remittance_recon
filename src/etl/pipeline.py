@@ -343,25 +343,23 @@ def _write_remittance_incremental(conn, records: list[dict]) -> None:
     log.info("Incremental upserted %d remittance records", len(records))
 
 
-
 def _dedup_tcn_is_latest(conn: duckdb.DuckDBPyConnection) -> int:
     """
     After inserting new remittance records, ensure is_latest=TRUE reflects the
-    most-recent authoritative row per claim. Two passes:
+    most-recent authoritative row per claim.
 
-    Pass 1 — Same TCN, multiple batches (reversal/correction in a later file):
+    Same TCN, multiple batches (reversal/correction in a later file):
       Keep only MAX(batch) per TCN. A Denial/Reversal row in batch 1877 supersedes
       the original Paid row in batch 1699 for the same TCN.
 
-    Pass 2 — Same (client_name_combined, first_dos), different TCNs (rebill):
-      When a claim is voided and re-submitted under a new TCN, both rows have
-      different TCNs so Pass 1 won't catch them. Keep only MAX(batch) per
-      (client_name_combined, first_dos).
+    Note: We intentionally do NOT suppress records with different TCNs for the same
+    (client, first_dos). Different TCNs represent independent claims that should
+    all remain visible — the system cannot reliably distinguish a rebill from two
+    legitimately separate claims sharing the same client and service date.
 
-    Returns the total number of rows updated across both passes.
+    Returns the number of rows updated.
     """
-    # Pass 1: same TCN, keep max batch
-    r1 = conn.execute("""
+    r1 = conn.execute("""\
         UPDATE remittance
         SET is_latest = FALSE
         WHERE is_latest = TRUE
@@ -371,27 +369,12 @@ def _dedup_tcn_is_latest(conn: duckdb.DuckDBPyConnection) -> int:
               GROUP BY tcn
           )
     """)
-    updated1 = r1.rowcount if r1.rowcount is not None else 0
+    updated = r1.rowcount if r1.rowcount is not None else 0
 
-    # Pass 2: same (client, DOS), different TCNs — keep max batch per DOS
-    r2 = conn.execute("""
-        UPDATE remittance
-        SET is_latest = FALSE
-        WHERE is_latest = TRUE
-          AND (client_name_combined, first_dos, batch) NOT IN (
-              SELECT client_name_combined, first_dos, MAX(batch)
-              FROM remittance
-              WHERE is_latest = TRUE
-              GROUP BY client_name_combined, first_dos
-          )
-    """)
-    updated2 = r2.rowcount if r2.rowcount is not None else 0
-
-    total = updated1 + updated2
-    if total:
-        log.info("TCN is_latest dedup: pass1=%d pass2=%d rows marked not-latest", updated1, updated2)
+    if updated:
+        log.info("TCN is_latest dedup: %d rows marked not-latest", updated)
     conn.commit()
-    return total
+    return updated
 
 
 def _mark_file_ingested(
@@ -598,6 +581,25 @@ def rebuild_reconciliation(
     Rebuild the entire reconciliation table based on the current contents of the
     payroll and remittance tables. Preserves analyst notes/overrides.
     """
+    # Restore records that were incorrectly suppressed by the old Pass 2 dedup
+    # (which grouped by client+first_dos and suppressed independent claims with
+    # different TCNs). Any record that is currently FALSE but has the MAX batch
+    # for its TCN should be TRUE — Pass 1 would not have suppressed it.
+    restored = conn.execute("""\
+        UPDATE remittance
+        SET is_latest = TRUE
+        WHERE is_latest = FALSE
+          AND (tcn, batch) IN (
+              SELECT tcn, MAX(batch)
+              FROM remittance
+              GROUP BY tcn
+          )
+    """)
+    restored_count = restored.rowcount if restored.rowcount is not None else 0
+    if restored_count:
+        log.info("Restored %d records incorrectly suppressed by old Pass 2 dedup", restored_count)
+        conn.commit()
+
     # Ensure TCN is_latest dedup is current before rebuilding
     _dedup_tcn_is_latest(conn)
 
