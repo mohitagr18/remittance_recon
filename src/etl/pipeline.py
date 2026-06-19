@@ -371,32 +371,8 @@ def _dedup_tcn_is_latest(conn: duckdb.DuckDBPyConnection) -> int:
     """)
     updated = r1.rowcount if r1.rowcount is not None else 0
 
-<<<<<<< Updated upstream
     if updated:
         log.info("TCN is_latest dedup: %d rows marked not-latest", updated)
-=======
-    # Pass 2: same (client, DOS range), different TCNs — keep max batch per (client, first_dos, last_dos).
-    # Including last_dos in the grouping key is critical: a single-day claim (first_dos=last_dos=4/15)
-    # and a multi-day claim (first_dos=4/15, last_dos=4/21) share the same first_dos but are
-    # independent transactions, not rebills of each other. Only when both first_dos AND last_dos
-    # match is it safe to treat the later batch as superseding the earlier one.
-    r2 = conn.execute("""
-        UPDATE remittance
-        SET is_latest = FALSE
-        WHERE is_latest = TRUE
-          AND (client_name_combined, first_dos, last_dos, batch) NOT IN (
-              SELECT client_name_combined, first_dos, last_dos, MAX(batch)
-              FROM remittance
-              WHERE is_latest = TRUE
-              GROUP BY client_name_combined, first_dos, last_dos
-          )
-    """)
-    updated2 = r2.rowcount if r2.rowcount is not None else 0
-
-    total = updated1 + updated2
-    if total:
-        log.info("TCN is_latest dedup: pass1=%d pass2=%d rows marked not-latest", updated1, updated2)
->>>>>>> Stashed changes
     conn.commit()
     return updated
 
