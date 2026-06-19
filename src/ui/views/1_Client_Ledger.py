@@ -508,70 +508,74 @@ if not ledger_df.empty:
 
     consolidated_df = pd.DataFrame(consolidated)
     if not consolidated_df.empty:
+        # ── Sort chronologically for netting pass ──────────────────────────
         consolidated_df = consolidated_df.sort_values("first_dos", ascending=True).reset_index(drop=True)
 
-        # ── Adjacent-week min-netting ──────────────────────────────────────
-        # Night shifts crossing midnight at a week boundary (Tue→Wed) cause
-        # payroll and remittance to attribute hours to different weeks,
-        # creating alternating Short Paid / Paid Excess patterns that net to
-        # zero across consecutive weeks.  Detect and auto-adjust.
-        payroll = consolidated_df["week_payroll_hours"].fillna(0.0).astype(float)
-        paid    = consolidated_df["paid_hours"].fillna(0.0).astype(float)
-        billed  = consolidated_df["billed_hours"].fillna(0.0).astype(float)
-        delta   = paid - payroll  # negative = short, positive = excess
+        # ── Adjacent-week min-netting (display layer only) ─────────────────
+        # Night shifts crossing midnight at a Tue/Wed week boundary cause
+        # payroll to credit hours to one week while remittance credits the
+        # adjacent week.  This creates alternating Short Paid / Paid Extra
+        # patterns that net to ~zero across consecutive weeks.
+        # We detect these pairs and reduce the apparent shortage/excess
+        # symmetrically so the ledger shows the true economic picture.
+        _payroll = consolidated_df["week_payroll_hours"].fillna(0.0).astype(float)
+        _paid    = consolidated_df["paid_hours"].fillna(0.0).astype(float)
+        _billed  = consolidated_df["billed_hours"].fillna(0.0).astype(float)
+        _delta   = _paid - _payroll   # negative = short paid, positive = excess
 
-        adj = [0.0] * len(consolidated_df)  # adjustment per row
+        _adj = [0.0] * len(consolidated_df)
 
         for i in range(len(consolidated_df) - 1):
-            d_cur  = delta.iloc[i]  + adj[i]      # effective delta after prior adj
-            d_next = delta.iloc[i+1] + adj[i+1]
+            d_cur  = _delta.iloc[i]   + _adj[i]
+            d_next = _delta.iloc[i+1] + _adj[i+1]
 
             if d_cur < -0.9 and d_next > 0.9:
-                # current week short, next week excess
+                # current short, next excess — net them
                 net = min(abs(d_cur), d_next)
-                adj[i]   += net   # reduce shortage
-                adj[i+1] -= net   # consume excess
+                _adj[i]   += net
+                _adj[i+1] -= net
             elif d_cur > 0.9 and d_next < -0.9:
-                # current week excess, next week short
+                # current excess, next short — net them
                 net = min(d_cur, abs(d_next))
-                adj[i]   -= net   # consume excess
-                adj[i+1] += net   # reduce shortage
+                _adj[i]   -= net
+                _adj[i+1] += net
 
-        # Apply adjustments
         for i in range(len(consolidated_df)):
-            if abs(adj[i]) < 0.01:
+            if abs(_adj[i]) < 0.01:
                 continue
-            idx = consolidated_df.index[i]
-            p_hrs = float(payroll.iloc[i])
-            pd_hrs = float(paid.iloc[i]) + adj[i]   # effective paid after netting
-            b_hrs = float(billed.iloc[i])
+            idx    = consolidated_df.index[i]
+            p_hrs  = float(_payroll.iloc[i])
+            pd_eff = float(_paid.iloc[i]) + _adj[i]   # effective paid after netting
+            b_hrs  = float(_billed.iloc[i])
+
+            # Adjust pending hours (cannot go below 0)
             old_pending = float(consolidated_df.at[idx, "week_pending_hrs"])
-            new_pending = max(round(old_pending - adj[i], 2), 0.0)
+            new_pending = max(round(old_pending - _adj[i], 2), 0.0)
             consolidated_df.at[idx, "week_pending_hrs"] = new_pending
 
-            # Recompute status based on adjusted paid hours
+            # Recompute status label from effective paid
             if p_hrs > 0:
-                if pd_hrs > p_hrs + 0.9:
+                if pd_eff > p_hrs + 0.9:
                     new_status = "Paid Extra"
-                elif b_hrs < p_hrs - 0.9 and pd_hrs >= b_hrs - 0.9:
+                elif b_hrs < p_hrs - 0.9 and pd_eff >= b_hrs - 0.9:
                     new_status = "Billed Short"
-                elif pd_hrs < b_hrs - 0.9:
-                    remain = round(b_hrs - pd_hrs, 1)
+                elif pd_eff < b_hrs - 0.9:
+                    remain = round(b_hrs - pd_eff, 1)
                     new_status = f"Short Paid ({remain} hrs remain)"
-                elif pd_hrs < p_hrs - 0.9:
+                elif pd_eff < p_hrs - 0.9:
                     new_status = "Short Paid"
                 else:
                     new_status = "Paid in Full"
             else:
-                if pd_hrs > b_hrs + 0.9:
+                if pd_eff > b_hrs + 0.9:
                     new_status = "Paid Extra"
-                elif pd_hrs < b_hrs - 0.9:
+                elif pd_eff < b_hrs - 0.9:
                     new_status = "Short Paid"
                 else:
                     new_status = "Paid in Full"
             consolidated_df.at[idx, "reconciled_status"] = new_status
 
-        # Restore descending sort for display
+        # Restore descending display order
         consolidated_df = consolidated_df.sort_values("first_dos", ascending=False)
 
     # Apply copay month filter from deep-link
@@ -589,16 +593,14 @@ if not ledger_df.empty:
         ]
 
     show_unpaid_only = st.checkbox(
-        "⏳ Show unpaid/pending line items only (where Paid < Payroll)",
+        "⏳ Show unpaid/pending only (weeks where adjusted pending hrs > 0)",
         value=False, key="ledger_show_unpaid",
     )
+    # Filter uses the adjusted week_pending_hrs so netted weeks are correctly
+    # excluded from the pending-only view.
     if show_unpaid_only and not consolidated_df.empty:
-        is_pr = consolidated_df["week_payroll_hours"].fillna(0.0).astype(float) > 0.0
         consolidated_df = consolidated_df[
-            (is_pr & (consolidated_df["paid_hours"].fillna(0.0).astype(float) <
-                      consolidated_df["week_payroll_hours"].fillna(0.0).astype(float) - 0.9)) |
-            (~is_pr & (consolidated_df["paid_hours"].fillna(0.0).astype(float) <
-                       consolidated_df["billed_hours"].fillna(0.0).astype(float) - 0.9))
+            consolidated_df["week_pending_hrs"].fillna(0.0).astype(float) > 0.9
         ]
 
 if ledger_df.empty or consolidated_df.empty:
@@ -647,83 +649,43 @@ else:
         selected_idx        = selected_rows[0]
         selected_week_start = consolidated_df.iloc[selected_idx]["first_dos"]
         selected_week_end   = consolidated_df.iloc[selected_idx]["last_dos"]
-        week_payroll        = float(consolidated_df.iloc[selected_idx].get("week_payroll_hours", 0) or 0)
 
-        # Query raw remittance records directly — no aggregation, no is_latest filtering.
-        # This shows every individual record exactly as it appears in the master Excel.
-        week_claims = queries.client_raw_remittance_claims(
-            conn, rem_name, str(selected_week_start), str(selected_week_end)
-        )
-        if week_claims.empty:
-            week_claims = queries.client_raw_remittance_claims(
-                conn, selected, str(selected_week_start), str(selected_week_end)
-            )
-
-        if not week_claims.empty:
-            week_claims["billed_hours"]   = week_claims["billed_hours"].fillna(0.0).astype(float)
-            week_claims["paid_hours"]     = week_claims["paid_hours"].fillna(0.0).astype(float)
-            week_claims["charge_amount"]  = week_claims["charge_amount"].fillna(0.0).astype(float)
-            week_claims["payment_amount"] = week_claims["payment_amount"].fillna(0.0).astype(float)
-            week_claims["week_payroll_hours"] = week_payroll
-            week_claims["amt_delta"] = (week_claims["charge_amount"] - week_claims["payment_amount"]).clip(lower=0.0).round(2)
-
-            def _claim_status(row):
-                p_hrs = float(row.get("paid_hours") or 0)
-                b_hrs = float(row.get("billed_hours") or 0)
-                p_amt = float(row.get("payment_amount") or 0)
-                b_amt = float(row.get("charge_amount") or 0)
-                tx    = str(row.get("transaction_type") or "")
-                if p_hrs < 0 or p_amt < 0:
-                    return "Reversal"
-                if b_hrs > 0:
-                    if p_hrs >= b_hrs:      return "Paid in Full"
-                    elif p_hrs == 0 and p_amt == 0: return "Denial / Unpaid"
-                    else:                   return f"Short Paid ({b_hrs - p_hrs:.1f} hrs remain)"
-                if b_amt > 0:
-                    if p_amt >= b_amt:      return "Paid in Full"
-                    elif p_amt == 0:        return "Denial / Unpaid"
-                    else:                   return "Short Paid"
-                if "Denial" in tx or "Reversal" in tx:
-                    return "Denial / Reversal"
-                return "Pending"
-
-            week_claims["reconciled_status"] = week_claims.apply(_claim_status, axis=1)
+        week_claims = daily_claims_df[
+            (daily_claims_df["first_dos_date"] >= selected_week_start) &
+            (daily_claims_df["first_dos_date"] <= selected_week_end)
+        ].copy()
 
         st.markdown(
             "<div style='margin-top:1.5rem;margin-bottom:0.5rem;'>"
             "<h4 style='margin:0;font-size:1.1rem;font-weight:600;color:#e8eaf0;'>🔍 Daily Claims Detail</h4>"
             "<div style='font-size:0.78rem;color:#8892a4;margin-top:2px;'>"
             f"Showing individual daily remittance records for week <b>{selected_week_start}</b> to <b>{selected_week_end}</b>"
+            "<br><span style='color:#4f8ef7;'>Note: daily rows reflect raw remittance data — adjacent-week netting applies at the weekly summary level only.</span>"
             "</div></div>",
             unsafe_allow_html=True,
         )
 
-        if week_claims.empty:
-            st.info("No remittance records found for this week.", icon="ℹ️")
-        else:
-            daily_display_cols = [
-                "first_dos", "payment_date", "reconciled_status", "week_payroll_hours",
-                "billed_hours", "paid_hours", "charge_amount", "payment_amount", "amt_delta", "tcn",
-            ]
-            daily_display_cols = [c for c in daily_display_cols if c in week_claims.columns]
-
-            st.dataframe(
-                week_claims.sort_values("first_dos")[daily_display_cols],
-                use_container_width=True,
-                hide_index=True,
-                height=min((len(week_claims) + 1) * 35 + 3, 250),
-                column_config={
-                    "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
-                    "payment_date":       st.column_config.DateColumn("Payment Date"),
-                    "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
-                    "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
-                    "billed_hours":       st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
-                    "paid_hours":         st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
-                    "charge_amount":      st.column_config.NumberColumn("Billed $", format="$%.2f"),
-                    "payment_amount":     st.column_config.NumberColumn("Paid $", format="$%.2f"),
-                    "amt_delta":          st.column_config.NumberColumn("$ Delta", format="$%.2f"),
-                    "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
-                },
-            )
+        daily_display_cols = [
+            "first_dos", "payment_date", "reconciled_status", "week_payroll_hours",
+            "billed_hours", "paid_hours", "charge_amount", "payment_amount", "amt_delta", "tcn",
+        ]
+        st.dataframe(
+            week_claims.sort_values("first_dos")[daily_display_cols],
+            use_container_width=True,
+            hide_index=True,
+            height=min((len(week_claims) + 1) * 35 + 3, 250),
+            column_config={
+                "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
+                "payment_date":       st.column_config.DateColumn("Payment Date"),
+                "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
+                "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
+                "billed_hours":       st.column_config.NumberColumn("Billed Hrs",  format="%.1f"),
+                "paid_hours":         st.column_config.NumberColumn("Paid Hrs",    format="%.1f"),
+                "charge_amount":      st.column_config.NumberColumn("Billed $",    format="$%.2f"),
+                "payment_amount":     st.column_config.NumberColumn("Paid $",      format="$%.2f"),
+                "amt_delta":          st.column_config.NumberColumn("$ Delta",     format="$%.2f"),
+                "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
+            },
+        )
     else:
         st.info("💡 Click on any week row in the table above to view daily claim details, TCNs, and payment dates.", icon="ℹ️")
