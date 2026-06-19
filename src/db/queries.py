@@ -670,6 +670,62 @@ def client_ledger(
     return conn.execute(sql, all_params).df()
 
 
+def client_raw_remittance_claims(
+    conn: duckdb.DuckDBPyConnection,
+    client_name: str,
+    week_start: str,
+    week_end: str,
+    care_type: str | None = None,
+) -> pd.DataFrame:
+    """Return raw, un-aggregated remittance records for a client and DOS week range.
+
+    Unlike client_ledger (which aggregates via rem_daily/rem_agg and filters by
+    is_latest), this returns every individual remittance row exactly as stored,
+    so the Daily Claims Detail table shows the same records the user sees in the
+    master remittance Excel.
+
+    No is_latest filtering is applied — all records for the client and date range
+    are returned.
+    """
+    import re
+    stripped_name = re.sub(
+        r"(?i)\s+(PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\)|Live-?[Ii]n|LIVE-?IN)$",
+        "", client_name.strip()
+    )
+
+    sql = """
+        SELECT
+            r.first_dos,
+            r.last_dos,
+            r.payment_date,
+            r.tcn,
+            r.batch,
+            r.transaction_type,
+            r.match_status,
+            r.billed_hours,
+            r.paid_hours,
+            r.charge_amount,
+            r.payment_amount,
+            r.insurance
+        FROM remittance r
+        WHERE (
+            UPPER(r.client_name_combined) = UPPER(?)
+            OR UPPER(r.client_name_combined) IN (
+                SELECT DISTINCT UPPER(client_name_remittance)
+                FROM reconciliation
+                WHERE UPPER(regexp_replace(client_name_payroll,
+                      '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\)|Live-?[Ii]n|LIVE-?IN)$', ''))
+                      = UPPER(?)
+                   OR UPPER(client_name_remittance) = UPPER(?)
+            )
+        )
+        AND r.first_dos >= ?
+        AND r.first_dos <= ?
+        ORDER BY r.first_dos, r.payment_date, r.batch
+    """
+    params = [stripped_name, stripped_name, stripped_name, week_start, week_end]
+    return conn.execute(sql, params).df()
+
 def client_weekly_recon_with_dos(
     conn: duckdb.DuckDBPyConnection,
     client_name: str,

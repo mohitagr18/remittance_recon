@@ -616,6 +616,14 @@ else:
 
             week_claims["reconciled_status"] = week_claims.apply(_claim_status, axis=1)
 
+<<<<<<< Updated upstream
+=======
+        week_claims = daily_claims_df[
+            (daily_claims_df["first_dos_date"] >= selected_week_start) &
+            (daily_claims_df["first_dos_date"] <= selected_week_end)
+        ].copy()
+
+>>>>>>> Stashed changes
         st.markdown(
             f"<div style='margin-top:1.5rem;margin-bottom:0.5rem;'>"
             f"<h4 style='margin:0;font-size:1.1rem;font-weight:600;color:#e8eaf0;'>🔍 Daily Claims Detail</h4>"
@@ -626,6 +634,7 @@ else:
             unsafe_allow_html=True,
         )
 
+<<<<<<< Updated upstream
         if week_claims.empty:
             st.info("No remittance records found for this week.", icon="ℹ️")
         else:
@@ -653,5 +662,34 @@ else:
                     "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
                 },
             )
+=======
+        daily_display_cols = [
+            "first_dos", "payment_date", "reconciled_status", "week_payroll_hours",
+            "billed_hours", "paid_hours",
+            "charge_amount", "payment_amount", "amt_delta", "tcn"
+        ]
+        daily_display_cols = [c for c in daily_display_cols if c in week_claims.columns]
+
+        week_claims = week_claims.sort_values("first_dos")
+
+        st.dataframe(
+            week_claims[daily_display_cols],
+            use_container_width=True,
+            hide_index=True,
+            height=min((len(week_claims) + 1) * 35 + 3, 250),
+            column_config={
+                "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
+                "payment_date":       st.column_config.DateColumn("Payment Date"),
+                "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
+                "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
+                "billed_hours":       st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
+                "paid_hours":         st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
+                "charge_amount":      st.column_config.NumberColumn("Billed $", format="$%.2f"),
+                "payment_amount":     st.column_config.NumberColumn("Paid $", format="$%.2f"),
+                "amt_delta":          st.column_config.NumberColumn("$ Delta", format="$%.2f"),
+                "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
+            }
+        )
+>>>>>>> Stashed changes
     else:
         st.info("💡 Click on any week row in the table above to view daily claim details, TCNs, and payment dates.", icon="ℹ️")
