@@ -17,6 +17,7 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 import pandas as pd
 import datetime
+import re
 
 import importlib
 from src.ui.styles.theme import inject_css
@@ -57,7 +58,6 @@ if "selected_client_ledger" not in st.session_state:
 if "selected_care_type" not in st.session_state:
     st.session_state.selected_care_type = None
 
-import re
 _ROLE_SUFFIX = re.compile(
     r"\s+(?:Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$",
     re.IGNORECASE,
@@ -175,44 +175,80 @@ if not summary_df.empty:
     fu_weeks    = int(row.get("followup_weeks", 0) or 0)
     rate        = float(row.get("collection_rate_pct", 0) or 0)
     ytd_pending = float(row.get("ytd_pending_hrs", 0) or 0)
+    rate_color  = "#22c55e" if rate >= 95 else "#f59e0b" if rate >= 85 else "#ef4444"
 
     st.markdown(
-        f"""
-        <div style='background:linear-gradient(135deg,#1e2130,#252840);border:1px solid #2a2d3e;
-                    border-radius:12px;padding:20px 24px;margin-bottom:1.2rem;
-                    display:flex;gap:40px;flex-wrap:wrap;align-items:center;'>
-            <div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Client</div>
-                 <div style='font-size:1.1rem;font-weight:700;color:#e8eaf0;margin-top:2px;'>{selected}</div></div>
-            <div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Insurance</div>
-                 <div style='font-size:1rem;font-weight:600;color:#4f8ef7;margin-top:2px;'>{ins}</div></div>
-            <div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Payroll Hrs</div>
-                 <div style='font-size:1rem;font-weight:600;color:#a78bfa;margin-top:2px;'>{ytd_payroll:,.1f}</div></div>
-            <div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Billed Hrs</div>
-                 <div style='font-size:1rem;font-weight:600;color:#e8eaf0;margin-top:2px;'>{ytd_billed:,.1f}</div></div>
-            <div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Paid Hrs</div>
-                 <div style='font-size:1rem;font-weight:600;color:#22c55e;margin-top:2px;'>{ytd_paid:,.1f}</div></div>
-            <div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Pending Hrs</div>
-                 <div style='font-size:1rem;font-weight:600;color:#f59e0b;margin-top:2px;'>{ytd_pending:,.1f}</div></div>
-            <div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Collection Rate</div>
-                 <div style='font-size:1rem;font-weight:600;color:{"#22c55e" if rate >= 95 else "#f59e0b" if rate >= 85 else "#ef4444"};margin-top:2px;'>{rate:.1f}%</div></div>
-            <div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Weeks Tracked</div>
-                 <div style='font-size:1rem;font-weight:600;color:#e8eaf0;margin-top:2px;'>{total_weeks} <span style='color:#f59e0b;font-size:.85rem;'>({fu_weeks} follow-up)</span></div></div>
-        </div>
-        """,
+        "<div style='background:linear-gradient(135deg,#1e2130,#252840);border:1px solid #2a2d3e;"
+        "border-radius:12px;padding:20px 24px;margin-bottom:1.2rem;"
+        "display:flex;gap:40px;flex-wrap:wrap;align-items:center;'>"
+        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Client</div>"
+        f"<div style='font-size:1.1rem;font-weight:700;color:#e8eaf0;margin-top:2px;'>{selected}</div></div>"
+        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Insurance</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:#4f8ef7;margin-top:2px;'>{ins}</div></div>"
+        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Payroll Hrs</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:#a78bfa;margin-top:2px;'>{ytd_payroll:,.1f}</div></div>"
+        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Billed Hrs</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:#e8eaf0;margin-top:2px;'>{ytd_billed:,.1f}</div></div>"
+        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Paid Hrs</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:#22c55e;margin-top:2px;'>{ytd_paid:,.1f}</div></div>"
+        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Pending Hrs</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:#f59e0b;margin-top:2px;'>{ytd_pending:,.1f}</div></div>"
+        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Collection Rate</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:{rate_color};margin-top:2px;'>{rate:.1f}%</div></div>"
+        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Weeks Tracked</div>"
+        f"<div style='font-size:1rem;font-weight:600;color:#e8eaf0;margin-top:2px;'>{total_weeks} "
+        f"<span style='color:#f59e0b;font-size:.85rem;'>({fu_weeks} follow-up)</span></div></div>"
+        "</div>",
         unsafe_allow_html=True,
     )
 
 _TILE_STYLE = {
-    ("Good",      None):             ("✅",  "#22c55e", "#0d2318", "All Paid – No Action"),
+    ("Good",      None):             ("✅",  "#22c55e", "#0d2318", "All Paid \u2013 No Action"),
     ("Good",      "Copay"):          ("💳",  "#a78bfa", "#1e1535", "Copay Month Logged"),
     ("Follow up", "Exceeds Copay"): ("⚠️",  "#f59e0b", "#1f1a0d", "Insurance Underpaid"),
     ("Follow up", "Partial Copay"): ("🔶", "#f97316", "#1f1208", "Partial Copay Month"),
 }
 
+
+def _month_tile(row) -> str:
+    """Return an HTML string for a single copay month tile.
+    Built as plain string concatenation — NOT inside an outer f-string —
+    so curly-brace CSS values don't get misinterpreted.
+    """
+    key = (row["copay_status"], row.get("copay_note"))
+    icon, color, bg, label = _TILE_STYLE.get(
+        key, ("\u2753", "#8892a4", "#1e2130", row["copay_status"])
+    )
+    pending = float(row.get("pending_dollars", 0) or 0)
+    billed  = float(row.get("total_billed_dollars", 0) or 0)
+    paid    = float(row.get("total_paid_dollars", 0) or 0)
+    copay_a = float(row.get("copay_amount", 0) or 0)
+    excess  = pending - copay_a if pending > copay_a + 1 else None
+
+    excess_html = (
+        '<div style="color:#f59e0b;font-size:0.68rem;margin-top:3px;">'
+        f'+${excess:,.2f} insurance shortfall</div>'
+        if excess else ""
+    )
+
+    return (
+        f'<div style="background:{bg};border:1px solid {color};border-radius:10px;'
+        f'padding:12px 14px;min-width:175px;flex:0 0 auto;">'
+        f'<div style="font-size:0.75rem;color:#8892a4;margin-bottom:4px;">{row["month_label"]}</div>'
+        f'<div style="font-size:0.85rem;font-weight:700;color:{color};">{icon} {label}</div>'
+        f'<div style="font-size:0.72rem;color:#c8cfe0;margin-top:6px;">Billed: <b>${billed:,.2f}</b></div>'
+        f'<div style="font-size:0.72rem;color:#c8cfe0;">Paid: <b>${paid:,.2f}</b></div>'
+        f'<div style="font-size:0.72rem;color:{color};font-weight:600;">Pending: ${pending:,.2f}</div>'
+        f'<div style="font-size:0.68rem;color:#8892a4;margin-top:2px;">Copay: ${copay_a:,.2f}/mo</div>'
+        + excess_html
+        + '</div>'
+    )
+
+
 try:
     from src.db.queries import copay_monthly_status, get_copay_table
     _copay_clients_df = get_copay_table(conn)
-    _copay_names      = (
+    _copay_names = (
         set(_copay_clients_df["client_name"].str.upper().tolist())
         if not _copay_clients_df.empty else set()
     )
@@ -227,65 +263,38 @@ try:
         if not _client_copay.empty:
             _client_copay = _client_copay.sort_values(["yr", "mo"])
 
-            def _month_tile(row):
-                key      = (row["copay_status"], row.get("copay_note"))
-                icon, color, bg, label = _TILE_STYLE.get(
-                    key, ("❓", "#8892a4", "#1e2130", row["copay_status"])
-                )
-                pending  = float(row.get("pending_dollars", 0) or 0)
-                billed   = float(row.get("total_billed_dollars", 0) or 0)
-                paid     = float(row.get("total_paid_dollars", 0) or 0)
-                copay_a  = float(row.get("copay_amount", 0) or 0)
-                excess   = pending - copay_a if pending > copay_a + 1 else None
-                excess_str = (
-                    f'<div style="color:#f59e0b;font-size:0.68rem;margin-top:3px;">'
-                    f'+${excess:,.2f} insurance shortfall</div>'
-                    if excess else ""
-                )
-                return (
-                    f'<div style="background:{bg};border:1px solid {color};border-radius:10px;'
-                    f'padding:12px 14px;min-width:175px;flex:0 0 auto;">'
-                    f'<div style="font-size:0.75rem;color:#8892a4;margin-bottom:4px;">{row["month_label"]}</div>'
-                    f'<div style="font-size:0.85rem;font-weight:700;color:{color};">{icon} {label}</div>'
-                    f'<div style="font-size:0.72rem;color:#c8cfe0;margin-top:6px;">Billed: <b>${billed:,.2f}</b></div>'
-                    f'<div style="font-size:0.72rem;color:#c8cfe0;">Paid: <b>${paid:,.2f}</b></div>'
-                    f'<div style="font-size:0.72rem;color:{color};font-weight:600;">Pending: ${pending:,.2f}</div>'
-                    f'<div style="font-size:0.68rem;color:#8892a4;margin-top:2px;">Copay: ${copay_a:,.2f}/mo</div>'
-                    f'{excess_str}</div>'
-                )
-
             _copay_amount = float(_client_copay.iloc[0].get("copay_amount", 0) or 0)
-            _n_full       = int((_client_copay["copay_note"].isna() & (_client_copay["copay_status"] == "Good")).sum())
-            _n_exceeds    = int((_client_copay["copay_note"] == "Exceeds Copay").sum())
-            _n_partial    = int((_client_copay["copay_note"] == "Partial Copay").sum())
+            _n_full    = int((_client_copay["copay_note"].isna() & (_client_copay["copay_status"] == "Good")).sum())
+            _n_exceeds = int((_client_copay["copay_note"] == "Exceeds Copay").sum())
+            _n_partial = int((_client_copay["copay_note"] == "Partial Copay").sum())
+
+            # Pre-build tiles and badges as plain strings before any outer f-string
+            _tiles_html = "".join(_month_tile(row) for _, row in _client_copay.iterrows())
 
             _insurance_badge = (
-                f"<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;"
-                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} ⚠️ Insurance Underpaid</span>"
+                "<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} \u26a0\ufe0f Insurance Underpaid</span>"
                 if _n_exceeds > 0 else ""
             )
             _review_badge = (
-                f"<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;"
-                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} 🔶 Partial Copay Months</span>"
+                "<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} \ud83d\udd36 Partial Copay Months</span>"
                 if _n_partial > 0 else ""
             )
 
             st.markdown(
-                f"""
-                <div style='margin-bottom:1rem;'>
-                    <div style='display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>
-                        <span style='font-size:1rem;font-weight:700;color:#a78bfa;'>📋 Copay Client</span>
-                        <span style='font-size:0.82rem;color:#8892a4;'>${_copay_amount:,.2f}/month</span>
-                        <span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;
-                               border-radius:5px;padding:2px 8px;font-size:0.75rem;'>✅ {_n_full} All Paid</span>
-                        {_insurance_badge}
-                        {_review_badge}
-                    </div>
-                    <div style='display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;'>
-                        {"".join(_month_tile(row) for _, row in _client_copay.iterrows())}
-                    </div>
-                </div>
-                """,
+                "<div style='margin-bottom:1rem;'>"
+                "<div style='display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>"
+                "<span style='font-size:1rem;font-weight:700;color:#a78bfa;'>📋 Copay Client</span>"
+                f"<span style='font-size:0.82rem;color:#8892a4;'>${_copay_amount:,.2f}/month</span>"
+                "<span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>\u2705 {_n_full} All Paid</span>"
+                + _insurance_badge
+                + _review_badge
+                + "</div>"
+                "<div style='display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;'>"
+                + _tiles_html
+                + "</div></div>",
                 unsafe_allow_html=True,
             )
 except Exception:
@@ -312,10 +321,10 @@ if not client_recon.empty:
         num_weeks = len(client_recon)
         if num_weeks > 20:
             st.markdown(
-                f"<style>"
-                f".element-container:has(div[data-testid='stPlotlyChart']){{overflow-x:auto !important;}}"
+                "<style>"
+                ".element-container:has(div[data-testid='stPlotlyChart']){overflow-x:auto !important;}"
                 f"div[data-testid='stPlotlyChart']{{min-width:{num_weeks * 45}px !important;}}"
-                f"</style>",
+                "</style>",
                 unsafe_allow_html=True,
             )
         selected_points = st.plotly_chart(
@@ -346,7 +355,7 @@ st.markdown(
 if selected_week:
     week_end_date = selected_week + datetime.timedelta(days=6)
     st.info(
-        f"📊 Filtering to selected week: **{selected_week.strftime('%b %d, %Y')} – {week_end_date.strftime('%b %d, %Y')}**",
+        f"📊 Filtering to selected week: **{selected_week.strftime('%b %d, %Y')} \u2013 {week_end_date.strftime('%b %d, %Y')}**",
         icon="🔍",
     )
     if st.button("Reset Chart Selection", key="btn_reset_client_chart"):
@@ -625,12 +634,11 @@ else:
 
 >>>>>>> Stashed changes
         st.markdown(
-            f"<div style='margin-top:1.5rem;margin-bottom:0.5rem;'>"
-            f"<h4 style='margin:0;font-size:1.1rem;font-weight:600;color:#e8eaf0;'>🔍 Daily Claims Detail</h4>"
-            f"<div style='font-size:0.78rem;color:#8892a4;margin-top:2px;'>"
-            f"Showing individual daily remittance records for week "
-            f"<b>{selected_week_start}</b> to <b>{selected_week_end}</b>"
-            f"</div></div>",
+            "<div style='margin-top:1.5rem;margin-bottom:0.5rem;'>"
+            "<h4 style='margin:0;font-size:1.1rem;font-weight:600;color:#e8eaf0;'>🔍 Daily Claims Detail</h4>"
+            "<div style='font-size:0.78rem;color:#8892a4;margin-top:2px;'>"
+            f"Showing individual daily remittance records for week <b>{selected_week_start}</b> to <b>{selected_week_end}</b>"
+            "</div></div>",
             unsafe_allow_html=True,
         )
 
