@@ -216,4 +216,6 @@ def create_all(conn: duckdb.DuckDBPyConnection) -> None:
     # Migrations: add columns that didn't exist in older schema versions
     conn.execute("ALTER TABLE skilled_tracker_clients ADD COLUMN IF NOT EXISTS deactivated_from DATE DEFAULT NULL")
     conn.commit()
-    conn.execute("CHECKPOINT")
+    # NOTE: CHECKPOINT intentionally omitted here — calling it while another
+    # write transaction is active (e.g. during st.switch_page) raises
+    # TransactionContext Error. Checkpoint is handled by DuckDB automatically.

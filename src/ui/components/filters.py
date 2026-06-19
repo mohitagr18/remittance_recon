@@ -14,12 +14,14 @@ from src.config import cfg
 
 def _get_conn():
     """Return or create a persistent DB connection stored in session state.
-    Runs create_all() on first connection to ensure schema is up to date.
+    Runs create_all() only on first connection to ensure schema is up to date.
+    A flag 'db_schema_created' prevents re-running DDL on every page navigation.
     """
     if "db_conn" not in st.session_state:
         conn = get_persistent_conn(cfg.db_path)
         create_all(conn)  # idempotent — CREATE TABLE IF NOT EXISTS
         st.session_state.db_conn = conn
+        st.session_state.db_schema_created = True
     return st.session_state.db_conn
 
 
