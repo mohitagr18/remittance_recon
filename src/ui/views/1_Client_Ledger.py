@@ -198,7 +198,7 @@ if not summary_df.empty:
     )
 
 _TILE_STYLE = {
-    ("Good",      None):             ("✅",  "#22c55e", "#0d2318", "All Paid \u2013 No Action"),
+    ("Good",      None):             ("✅",  "#22c55e", "#0d2318", "All Paid – No Action"),
     ("Good",      "Copay"):          ("💳",  "#a78bfa", "#1e1535", "Copay Month Logged"),
     ("Follow up", "Exceeds Copay"): ("⚠️",  "#f59e0b", "#1f1a0d", "Insurance Underpaid"),
     ("Follow up", "Partial Copay"): ("🔶", "#f97316", "#1f1208", "Partial Copay Month"),
@@ -338,7 +338,7 @@ st.markdown(
 if selected_week:
     week_end_date = selected_week + datetime.timedelta(days=6)
     st.info(
-        f"📊 Filtering to selected week: **{selected_week.strftime('%b %d, %Y')} \u2013 {week_end_date.strftime('%b %d, %Y')}**",
+        f"📊 Filtering to selected week: **{selected_week.strftime('%b %d, %Y')} – {week_end_date.strftime('%b %d, %Y')}**",
         icon="🔍",
     )
     if st.button("Reset Chart Selection", key="btn_reset_client_chart"):
@@ -438,23 +438,31 @@ if not ledger_df.empty:
         return ", ".join(str(d) for d in s) if len(s) <= 3 else f"{s[0]} ... {s[-1]} ({len(s)} payments)"
 
     def get_status_display(group):
-        detailed = [d for d in group["week_result_detailed"].dropna().unique() if d]
-        if detailed:
-            s = detailed[0]
-            return {"Billed Short": "Billed Short", "Paid Less": "Short Paid",
-                    "Not Billed": "Not Billed", "Payer Reversal": "Payer Reversal"}.get(s, s)
+        # Always compare payroll vs paid — never billed vs paid.
+        # Billed hours may be inflated by night-shift adjacent-week netting
+        # (e.g. 148 billed vs 74 payroll) which would falsely flag "Short Paid".
         p_hrs  = float(group["week_payroll_hours"].iloc[0] or 0.0)
         pd_hrs = float(group["week_paid_hours"].iloc[0] or 0.0)
         b_hrs  = float(group["week_billed_hours"].iloc[0] or 0.0)
-        if p_hrs > 0 and pd_hrs > p_hrs + 0.9: return "Paid Extra"
+
         if p_hrs > 0:
-            if b_hrs < p_hrs - 0.9:             return "Billed Short"
-            if pd_hrs > b_hrs + 0.9:            return "Paid Extra"
-            if pd_hrs < b_hrs - 0.9:            return f"Short Paid ({b_hrs - pd_hrs:.1f} hrs remain)"
-            if pd_hrs < p_hrs - 0.9:            return "Short Paid"
+            # Primary comparison: payroll vs paid
+            if pd_hrs > p_hrs + 0.9:       return "Paid Extra"
+            if pd_hrs >= p_hrs - 0.9:      return "Paid in Full"
+            # Fall back to result_detailed only if paid < payroll
+            detailed = [d for d in group["week_result_detailed"].dropna().unique() if d]
+            if detailed:
+                s = detailed[0]
+                mapped = {"Billed Short": "Billed Short", "Paid Less": "Short Paid",
+                          "Not Billed": "Not Billed", "Payer Reversal": "Payer Reversal"}.get(s, s)
+                return mapped
+            remain = round(p_hrs - pd_hrs, 1)
+            return f"Short Paid ({remain} hrs remain)"
         else:
-            if pd_hrs > b_hrs + 0.9:            return "Paid Extra"
-            if pd_hrs < b_hrs - 0.9:            return "Short Paid"
+            # No payroll hours — compare billed vs paid
+            if pd_hrs > b_hrs + 0.9:       return "Paid Extra"
+            if pd_hrs >= b_hrs - 0.9:      return "Paid in Full"
+            if pd_hrs < b_hrs - 0.9:       return "Short Paid"
         return "Paid in Full"
 
     consolidated = []
@@ -525,14 +533,9 @@ if not ledger_df.empty:
             pd_eff    = float(_paid.iloc[i]) + _adj[i]
             this_week = consolidated_df.at[idx, "first_dos"]
 
-            # ── Pending hrs: payroll minus effective paid, clamped to 0 ────
             new_pending = max(round(p_hrs - pd_eff, 2), 0.0) if p_hrs > 0 else 0.0
             consolidated_df.at[idx, "week_pending_hrs"] = new_pending
 
-            # ── Status: compare effective paid vs PAYROLL (not billed) ─────
-            # Netting is a payroll-vs-paid reconciliation.  Billed may differ
-            # (e.g. night-shift hours billed in the adjacent week) and must
-            # not drive the post-netting status label.
             if p_hrs > 0:
                 if pd_eff > p_hrs + 0.9:
                     base_status = "Paid Extra"
@@ -552,7 +555,6 @@ if not ledger_df.empty:
 
             consolidated_df.at[idx, "reconciled_status"] = base_status + " (adjusted)"
 
-            # ── Neighbor lookup for drill-down note ────────────────────────
             if _adj[i] > 0:
                 neighbor_i = i + 1 if i + 1 < len(consolidated_df) else i - 1
             else:
@@ -561,7 +563,6 @@ if not ledger_df.empty:
             neighbor_week = consolidated_df.iloc[neighbor_i]["first_dos"]
             hrs_netted    = round(abs(_adj[i]), 1)
 
-            # per-week drill-down note (shown in daily claims header)
             if _adj[i] > 0:
                 _netting_by_week[this_week] = (
                     f"🔀 **{hrs_netted} hrs** short — offset by adjacent week "
@@ -573,7 +574,6 @@ if not ledger_df.empty:
                     f"(**{neighbor_week}**) which was short by the same amount."
                 )
 
-            # ── Netting log row (simplified — no Direction column) ─────────
             pay_date_str = consolidated_df.at[idx, "payment_date"]
             _netting_log.append({
                 "Week":            str(this_week),
@@ -610,15 +610,12 @@ if not ledger_df.empty:
 if ledger_df.empty or consolidated_df.empty:
     st.info("No remittance records found for this client.", icon="ℹ️")
 else:
-    # ── Netting transparency expander ──────────────────────────────────────
     if _netting_log:
         with st.expander(
             f"🔀 Adjacent-week netting applied to {len(_netting_log)} week(s) — click to see details",
             expanded=False,
         ):
-            st.markdown(
-                "**❓ What is adjacent-week netting?**"
-            )
+            st.markdown("**❓ What is adjacent-week netting?**")
             st.markdown(
                 "When an aide works a night shift that crosses midnight at the Tue→Wed week boundary, "
                 "payroll credits the hours to one week while insurance remittance credits the adjacent week. "
