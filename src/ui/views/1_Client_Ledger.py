@@ -264,8 +264,11 @@ try:
                 + "</div></div>",
                 unsafe_allow_html=True,
             )
-except Exception:
-    pass
+except Exception as _copay_err:
+    st.warning(
+        f"💳 Copay cards could not be loaded: {_copay_err}",
+        icon="⚠️",
+    )
 
 client_recon = queries.client_weekly_recon_with_dos(
     conn, selected, care_type=st.session_state.selected_care_type
@@ -314,7 +317,7 @@ if active_client_chart_key in st.session_state and st.session_state[active_clien
                 pass
 
 st.markdown(
-    "<div class='section-header'><h3>🧾 Payment Ledger</h3></div>",
+    "<div class='section-header'><h3>🧳 Payment Ledger</h3></div>",
     unsafe_allow_html=True,
 )
 
