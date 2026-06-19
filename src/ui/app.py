@@ -20,7 +20,7 @@ client_ledger_page    = st.Page("views/1_Client_Ledger.py",        title="Client
 analyst_workbench_page= st.Page("views/2_Analyst_Workbench.py",   title="Analyst Workbench",      icon="🔧")
 ai_chat_page          = st.Page("views/4_AI_Chat.py",              title="AI Chat",                icon="💬")
 
-tracker_page          = st.Page("views/6_Skilled_Tracker.py",      title="Skilled Billing Tracker",icon="📊")
+tracker_page          = st.Page("views/6_EVV_Tracker.py",          title="EVV Tracker",            icon="📊")
 copay_manager_page    = st.Page("views/7_Copay_Manager.py",        title="Copay Manager",          icon="📋")
 
 name_match_page       = st.Page("views/3_Name_Match_Manager.py",   title="Name Match Manager",     icon="⚙️")
