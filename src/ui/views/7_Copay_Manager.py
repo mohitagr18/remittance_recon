@@ -167,6 +167,8 @@ def _build_payer_summary(df: pd.DataFrame) -> pd.DataFrame:
         total_shortfall=("Insurance Shortfall", "sum"),
     ).reset_index()
     oldest = df.copy()
+    # Cast insurance to str so the merge key types match grp (which always has str Insurance)
+    oldest["insurance"] = oldest["insurance"].fillna("—").astype(str)
     oldest["_sort"] = oldest["yr"] * 100 + oldest["mo"]
     oldest = oldest.sort_values("_sort").groupby("insurance", dropna=False).first().reset_index()
     oldest = oldest[["insurance", "month_label"]].rename(
