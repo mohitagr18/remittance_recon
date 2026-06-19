@@ -4,6 +4,9 @@ Things deferred for future implementation.
 
 ---
 
+## EVV Tracker
+- Multiple entries for Derricott and Pegram on the heatmap. Some are wrong
+
 ## Copay: Partial Client Copay Tracking
 
 **Context:** The Copay Manager currently assumes client copay is always paid in full.
