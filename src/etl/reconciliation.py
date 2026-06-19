@@ -23,6 +23,11 @@ Logic reverse-engineered from the Excel formulas in the recon file:
     - billing_vs_paid != 0 (rounding)     → "Billing Error"
     - paid > billed                        → "Paid Excess"
 
+  Copay dollar logic (unskilled clients with a monthly copay):
+    - Monthly pending dollars ≈ copay_amount (±$1.00) → "Good", "Copay"
+    - Monthly pending dollars == 0                    → "Good" (no change)
+    - Monthly pending dollars > copay_amount          → "Follow up", "Exceeds Copay"
+
 Note: The Excel formula uses payroll_vs_paid threshold of 0.9 (not 0.1) as
 the boundary between "Good" and "Follow up" on the payroll-vs-paid column.
 We preserve that tolerance here.
@@ -31,6 +36,7 @@ We preserve that tolerance here.
 from __future__ import annotations
 
 TOLERANCE = 0.9
+COPAY_DOLLAR_TOLERANCE = 1.00   # ±$1.00 for monthly copay comparison
 
 
 def compute_result(
@@ -43,6 +49,8 @@ def compute_result(
     """
     Returns (result_simple, result_detailed).
     result_detailed is None when result_simple != 'Follow up'.
+    Note: copay dollar-amount logic is handled separately in
+    compute_result_with_copay_dollars() at the monthly aggregation level.
     """
     payroll_hrs = _safe(payroll_hrs)
     billed_hrs = _safe(billed_hrs)
@@ -70,6 +78,9 @@ def compute_result(
     # ── Follow-up classification ──────────────────────────────────────────────
     if billed_hrs < 1:
         return "Follow up", "Not Billed"
+    # If paid ≈ payroll, payer made it whole regardless of billing amount → Good
+    if abs(payroll_hrs - paid_hrs) <= tolerance:
+        return "Good", None
     if billed_hrs < payroll_hrs - tolerance:
         return "Follow up", "Billed Short"
 
@@ -85,6 +96,52 @@ def compute_result(
         return "Follow up", "Billing Error"
 
     return "Good", None
+
+
+def compute_copay_monthly_status(
+    monthly_pending_dollars: float,
+    copay_amount: float,
+) -> tuple[str, str | None]:
+    """
+    Dollar-based copay check applied at the monthly aggregation level.
+
+    Called after summing pending dollars across all weeks in a month for a
+    copay client. Returns an override (result_simple, result_detailed) tuple.
+
+    Rules:
+      - pending ≈ copay_amount (±$1.00) → ("Good", "Copay")
+          The payer paid everything except the client's expected monthly share.
+          This is correct behaviour — surface with a distinct highlight in the UI.
+      - pending == 0 (or within $1.00 of 0) → ("Good", None)
+          Fully paid including copay — no action needed.
+      - pending > copay_amount + $1.00 → ("Follow up", "Exceeds Copay")
+          Pending is more than the expected copay — needs review.
+      - 0 < pending < copay_amount - $1.00 → ("Follow up", "Partial Copay")
+          Client underpaid even relative to their copay — needs review.
+    """
+    pending = _safe(monthly_pending_dollars)
+    copay   = _safe(copay_amount)
+
+    if copay <= 0:
+        return ("Good", None)
+
+    # Fully paid (pending near zero)
+    if abs(pending) <= COPAY_DOLLAR_TOLERANCE:
+        return ("Good", None)
+
+    # Pending ≈ copay — expected remainder, flag as Copay (not a failure)
+    if abs(pending - copay) <= COPAY_DOLLAR_TOLERANCE:
+        return ("Good", "Copay")
+
+    # Pending exceeds copay — something beyond the copay is unpaid
+    if pending > copay + COPAY_DOLLAR_TOLERANCE:
+        return ("Follow up", "Exceeds Copay")
+
+    # Pending is less than copay but not zero — partial underpayment
+    if 0 < pending < copay - COPAY_DOLLAR_TOLERANCE:
+        return ("Follow up", "Partial Copay")
+
+    return ("Good", None)
 
 
 def compute_deltas(

@@ -26,6 +26,47 @@ inject_css()
 
 conn = _get_conn()
 
+# ── Copay monthly status lookup (cached per session) ──────────────────────────
+@st.cache_data(ttl=300)
+def _copay_status_map(_conn_id: int) -> dict:
+    """Returns {(client_name_upper, 'Mon YYYY'): (copay_status, copay_note, copay_amount)}"""
+    try:
+        from src.db.queries import copay_monthly_status
+        df = copay_monthly_status(conn)
+        result = {}
+        for _, row in df.iterrows():
+            key = (row["client_name"].upper(), row["month_label"])
+            result[key] = (row["copay_status"], row.get("copay_note"), row.get("copay_amount", 0))
+        return result
+    except Exception:
+        return {}
+
+_COPAY_MAP = _copay_status_map(id(conn))
+
+_COPAY_BADGE_CFG = {
+    ("Good",      "Copay"):         ("💜", "Copay"),
+    ("Good",      None):            ("✅", "Fully Paid"),
+    ("Follow up", "Exceeds Copay"): ("🔴", "Exceeds Copay"),
+    ("Follow up", "Partial Copay"): ("🔶", "Partial Copay"),
+}
+
+def _copay_cell(client_name: str, week_start: str) -> str:
+    """Return a plain-text emoji label for display in st.dataframe."""
+    try:
+        import pandas as pd
+        mo_label = pd.to_datetime(week_start).strftime("%b %Y")
+    except Exception:
+        return "💜 Copay"
+    key = (client_name.upper(), mo_label)
+    entry = _COPAY_MAP.get(key)
+    if entry is None:
+        return "💜 Copay"
+    status, note, amt = entry
+    icon, label = _COPAY_BADGE_CFG.get((status, note), ("💜", "Copay"))
+    amt_str = f" · ${amt:,.0f}/mo" if amt else ""
+    return f"{icon} {label}{amt_str}"
+
+
 # ── Header ─────────────────────────────────────────────────────────────────
 st.markdown(
     """
@@ -169,7 +210,7 @@ def render_weekly_recon(care_type: str | None = None):
     )
 
     # ── Build display columns ───────────────────────────────────────────────────
-    display = df.copy()
+    display = df.copy().reset_index(drop=True)  # ensure iloc matches visual row index
 
     # Format date range into one readable column starting with YYYY-MM-DD for chronological sorting
     display["week_range"] = (
@@ -184,16 +225,20 @@ def render_weekly_recon(care_type: str | None = None):
     show_cols = [
         "insurance", "client", "week_range",
         "payroll_hours", "billed_hours", "paid_hours",
-        "pending_hrs", "payroll_vs_billed",
+        "pending_hrs",
         "status", "reason",
-        "is_copay_client",
+        "copay_tag",
     ]
     show_cols = [c for c in show_cols if c in display.columns]
 
     # ── Status colour indicator column ─────────────────────────────────────────
     STATUS_ICON = {"Good": "✅", "Follow up": "⚠️", "No Payroll Hours": "⬜", "No Payroll Data": "⬜"}
     display["status"] = display["status"].map(lambda s: f"{STATUS_ICON.get(s, '')} {s}" if isinstance(s, str) else s)
-    display["is_copay_client"] = display["is_copay_client"].map(lambda x: "Yes" if x else "No")
+    def _build_copay_col(row):
+        if not row.get("is_copay_client", False):
+            return ""
+        return _copay_cell(str(row.get("client", "")), str(row.get("week_start", "")))
+    display["copay_tag"] = display.apply(_build_copay_col, axis=1)
 
     # ── Render table ────────────────────────────────────────────────────────────
     selection = st.dataframe(
@@ -208,10 +253,9 @@ def render_weekly_recon(care_type: str | None = None):
             "billed_hours":      st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
             "paid_hours":        st.column_config.NumberColumn("Paid Hrs",   format="%.1f"),
             "pending_hrs":       st.column_config.NumberColumn("⏳ Pending", format="%.1f"),
-            "payroll_vs_billed": st.column_config.NumberColumn("PvB Δ",      format="%.1f"),
             "status":            st.column_config.TextColumn("Status",       width="small"),
             "reason":            st.column_config.TextColumn("Reason",       width="medium"),
-            "is_copay_client":   st.column_config.TextColumn("Copay",    width="small"),
+            "copay_tag":         st.column_config.TextColumn("Copay Status", width="medium"),
         },
         on_select="rerun",
         selection_mode="single-row",
@@ -221,7 +265,7 @@ def render_weekly_recon(care_type: str | None = None):
 
     st.caption(
         f"📊 {len(display):,} clients · sorted by ⏳ Pending hrs ↓ · "
-        f"PvB Δ = Payroll vs Billed difference · Click any row to view individual claim details below"
+        f"Click any row to view individual claim details below"
     )
 
     # ── Render totals row for the entire week ───────────────────────────────────
@@ -235,7 +279,6 @@ def render_weekly_recon(care_type: str | None = None):
             <span>Billed: <b style='color:#a78bfa;'>{total_billed:,.1f}</b></span>
             <span>Paid: <b style='color:#22c55e;'>{total_paid:,.1f}</b></span>
             <span>Pending: <b style='color:#f59e0b;'>{total_pending:,.1f}</b></span>
-            <span>PvB Δ: <b style='color:#e8eaf0;'>{(total_payroll - total_billed):,.1f}</b></span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -244,11 +287,17 @@ def render_weekly_recon(care_type: str | None = None):
     # ── Render selected client details ──────────────────────────────────────────
     selected_rows = selection.selection.rows if selection.selection else []
     if selected_rows:
-        selected_row = display.iloc[selected_rows[0]]
+        row_idx = selected_rows[0]
+        # Guard: if filter changed and selection is now stale/out-of-bounds, skip
+        if row_idx >= len(display):
+            st.info("ℹ️ Selection is out of range — please click a row in the table above.", icon="ℹ️")
+            return
+        selected_row = display.iloc[row_idx]
         client_name = selected_row["client"]
         w_start = selected_row["week_start"]
         w_end = selected_row["week_end"]
-        
+        payroll_hrs_selected = selected_row.get("payroll_hours", 0) or 0
+
         st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
         st.markdown(
             f"""
@@ -258,7 +307,7 @@ def render_weekly_recon(care_type: str | None = None):
             """,
             unsafe_allow_html=True
         )
-        
+
         # Try with remittance name matching
         rem_name = client_name
         summary_df = queries.client_summary(conn, client_name, care_type=care_type)
@@ -280,13 +329,16 @@ def render_weekly_recon(care_type: str | None = None):
         else:
             # Calculate deltas for dollars
             rem_df["amt_delta"] = rem_df["charge_amount"] - rem_df["payment_amount"]
-            
+
+            # Inject payroll hours from the parent weekly recon row into each detail row
+            rem_df["payroll_hours"] = payroll_hrs_selected
+
             def compute_rec_status(row):
                 b_hrs = row.get("billed_hours", 0) or 0
                 p_hrs = row.get("paid_hours", 0) or 0
                 b_amt = row.get("charge_amount", 0) or 0
                 p_amt = row.get("payment_amount", 0) or 0
-                
+
                 if p_hrs < 0 or p_amt < 0:
                     return "Reversal"
                 if b_hrs > 0:
@@ -314,7 +366,7 @@ def render_weekly_recon(care_type: str | None = None):
             display_cols = [c for c in [
                 "first_dos", "last_dos", "payment_date",
                 "reconciled_status", "charge_amount", "payment_amount", "amt_delta",
-                "billed_hours", "paid_hours", "tcn",
+                "payroll_hours", "billed_hours", "paid_hours", "tcn",
             ] if c in rem_df.columns]
 
             st.dataframe(
@@ -330,6 +382,7 @@ def render_weekly_recon(care_type: str | None = None):
                     "charge_amount":     st.column_config.NumberColumn("Charged Amt", format="$%.2f"),
                     "payment_amount":    st.column_config.NumberColumn("Paid Amt", format="$%.2f"),
                     "amt_delta":         st.column_config.NumberColumn("$ Delta", format="$%.2f"),
+                    "payroll_hours":     st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
                     "billed_hours":      st.column_config.NumberColumn("Billed Hrs", format="%.1f"),
                     "paid_hours":        st.column_config.NumberColumn("Paid Hrs", format="%.1f"),
                     "tcn":               st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
@@ -339,7 +392,7 @@ def render_weekly_recon(care_type: str | None = None):
 
             # Calculate selected client totals
             total_charged = rem_df["charge_amount"].sum()
-            total_paid = rem_df["payment_amount"].sum()
+            total_paid_amt = rem_df["payment_amount"].sum()
             total_delta = rem_df["amt_delta"].sum()
             total_billed_h = rem_df["billed_hours"].sum()
             total_paid_h = rem_df["paid_hours"].sum()
@@ -350,10 +403,11 @@ def render_weekly_recon(care_type: str | None = None):
                             padding:12px 20px;margin-top:8px;font-size:0.82rem;
                             display:flex;gap:24px;flex-wrap:wrap;'>
                     <span style='color:#8892a4;font-weight:600;text-transform:uppercase;letter-spacing:.06em;'>TOTALS ({client_name})</span>
+                    <span>Payroll Hrs: <b style='color:#e8eaf0;'>{payroll_hrs_selected:,.1f}</b></span>
                     <span>Billed Hrs: <b style='color:#e8eaf0;'>{total_billed_h:,.1f}</b></span>
                     <span>Paid Hrs: <b style='color:#22c55e;'>{total_paid_h:,.1f}</b></span>
                     <span>Charged $: <b style='color:#a78bfa;'>${total_charged:,.2f}</b></span>
-                    <span>Paid $: <b style='color:#22c55e;'>${total_paid:,.2f}</b></span>
+                    <span>Paid $: <b style='color:#22c55e;'>${total_paid_amt:,.2f}</b></span>
                     <span>$ Delta: <b style='color:{"#e8eaf0" if total_delta == 0 else "#ef4444"};'>${total_delta:,.2f}</b></span>
                 </div>
                 """,
@@ -377,4 +431,3 @@ with tab_skilled:
 
 with tab_unskilled:
     render_weekly_recon("Unskilled")
-

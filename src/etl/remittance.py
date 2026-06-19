@@ -177,6 +177,7 @@ def aggregate_remittance_hours(records: list[dict]) -> dict[tuple[str, str], dic
         total_paid = 0.0
         final_ins = None
         orig_name = None
+        max_billed_per_fd = {}
         
         for (fd, ld), group in segments.items():
             daily_billed = defaultdict(float)
@@ -193,8 +194,9 @@ def aggregate_remittance_hours(records: list[dict]) -> dict[tuple[str, str], dic
                     
             segment_billed = max(daily_billed.values()) if daily_billed else 0.0
             segment_billed = max(segment_billed, 0.0)
-            total_billed += segment_billed
-            
+            max_billed_per_fd[fd] = max(max_billed_per_fd.get(fd, 0.0), segment_billed)
+
+        total_billed = sum(max_billed_per_fd.values())
         agg[(client, care_type)] = {
             "client_name_combined": orig_name,
             "care_type": care_type,

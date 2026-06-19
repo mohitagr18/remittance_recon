@@ -21,11 +21,15 @@ CREATE TABLE IF NOT EXISTS name_match (
 );
 
 CREATE TABLE IF NOT EXISTS copay_clients (
-    id           INTEGER PRIMARY KEY,
-    client_name  VARCHAR NOT NULL,   -- payroll name (may include role suffix)
-    insurance    VARCHAR,
-    is_active    BOOLEAN DEFAULT TRUE,
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id             INTEGER PRIMARY KEY,
+    client_name    VARCHAR NOT NULL,   -- payroll name (may include role suffix)
+    insurance      VARCHAR,
+    is_active      BOOLEAN DEFAULT TRUE,
+    copay_amount   DECIMAL(10,2),      -- monthly copay dollar amount
+    effective_from DATE,               -- copay start date (NULL = unknown)
+    effective_to   DATE,               -- copay end date (NULL = still active)
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS employees (
@@ -157,6 +161,45 @@ CREATE SEQUENCE IF NOT EXISTS seq_employees       START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_payroll         START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_remittance      START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_reconciliation  START 1;
+
+-- ── Skilled Tracker ──────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS skilled_tracker_clients (
+    id              INTEGER PRIMARY KEY,
+    display_name    VARCHAR NOT NULL,
+    bill_code       VARCHAR,
+    service_type    VARCHAR,
+    remittance_name VARCHAR,
+    is_active       BOOLEAN DEFAULT TRUE,
+    deactivated_from DATE DEFAULT NULL,
+    added_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (display_name, bill_code)
+);
+
+CREATE TABLE IF NOT EXISTS skilled_tracker_comments (
+    id              INTEGER PRIMARY KEY,
+    display_name    VARCHAR NOT NULL,
+    bill_code       VARCHAR NOT NULL,
+    billing_week    VARCHAR NOT NULL,
+    comment_text    TEXT NOT NULL,
+    author          VARCHAR NOT NULL,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tracker_validation_runs (
+    id              INTEGER PRIMARY KEY,
+    run_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    excel_filename  VARCHAR,
+    total_tests     INTEGER,
+    passed_tests    INTEGER,
+    failed_tests    INTEGER,
+    report_json     TEXT
+);
+
+CREATE SEQUENCE IF NOT EXISTS seq_skilled_tracker_clients START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_skilled_tracker_comments START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_tracker_validation_runs START 1;
+
 CREATE SEQUENCE IF NOT EXISTS seq_rebill_tracker  START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_review_actions  START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_ingested_files  START 1;
@@ -170,4 +213,9 @@ def create_all(conn: duckdb.DuckDBPyConnection) -> None:
         stmt = stmt.strip()
         if stmt:
             conn.execute(stmt)
+    # Migrations: add columns that didn't exist in older schema versions
+    conn.execute("ALTER TABLE skilled_tracker_clients ADD COLUMN IF NOT EXISTS deactivated_from DATE DEFAULT NULL")
     conn.commit()
+    # NOTE: CHECKPOINT intentionally omitted here — calling it while another
+    # write transaction is active (e.g. during st.switch_page) raises
+    # TransactionContext Error. Checkpoint is handled by DuckDB automatically.
