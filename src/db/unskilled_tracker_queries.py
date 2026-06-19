@@ -194,7 +194,7 @@ def refresh_escalation_flags(conn: duckdb.DuckDBPyConnection) -> None:
         FROM (
             SELECT
                 id,
-                (                     SELECT COUNT(*)                     FROM unskilled_remit_tracker o                     WHERE o.client_name = base.client_name                       AND o.status != 'RESOLVED'                       AND ABS(DATEDIFF('month', o.entry_date, base.entry_date)) <= 2                 ) >= ? AS volume_flag,
+                (                     SELECT COUNT(*)                     FROM unskilled_remit_tracker o                     WHERE o.client_name = base.client_name                       AND o.status != 'RESOLVED'                       AND ABS(DATEDIFF('month', o.first_dos, base.first_dos)) <= 2                 ) >= ? AS volume_flag,
                 (DATEDIFF('month', entry_date, CURRENT_DATE) >= ?)  AS age_flag
             FROM unskilled_remit_tracker base
             WHERE status != 'RESOLVED'
