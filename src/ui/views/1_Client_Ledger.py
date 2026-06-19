@@ -173,8 +173,8 @@ if not summary_df.empty:
     rate_color  = "#22c55e" if rate >= 95 else "#f59e0b" if rate >= 85 else "#ef4444"
 
     st.markdown(
-        "<div style='background:linear-gradient(135deg,#1e2130,#252840);border:1px solid #2a2d3e;"
-        "border-radius:12px;padding:20px 24px;margin-bottom:1.2rem;"
+        "<div style='background:linear-gradient(135deg,#1e2130,#252840);border:1px solid #2a2d3e;'"
+        "border-radius:12px;padding:20px 24px;margin-bottom:1.2rem;'"
         "display:flex;gap:40px;flex-wrap:wrap;align-items:center;'>"
         "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Client</div>"
         f"<div style='font-size:1.1rem;font-weight:700;color:#e8eaf0;margin-top:2px;'>{selected}</div></div>"
@@ -221,7 +221,7 @@ def _month_tile(row) -> str:
         if excess else ""
     )
     return (
-        f'<div style="background:{bg};border:1px solid {color};border-radius:10px;'
+        f'<div style="background:{bg};border:1px solid {color};border-radius:10px;' 
         f'padding:12px 14px;min-width:175px;flex:0 0 auto;">'
         f'<div style="font-size:0.75rem;color:#8892a4;margin-bottom:4px;">{row["month_label"]}</div>'
         f'<div style="font-size:0.85rem;font-weight:700;color:{color};">{icon} {label}</div>'
@@ -257,12 +257,12 @@ try:
             _n_partial = int((_client_copay["copay_note"] == "Partial Copay").sum())
             _tiles_html = "".join(_month_tile(row) for _, row in _client_copay.iterrows())
             _insurance_badge = (
-                "<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;"
+                "<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;'"
                 f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} \u26a0\ufe0f Insurance Underpaid</span>"
                 if _n_exceeds > 0 else ""
             )
             _review_badge = (
-                "<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;"
+                "<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;'"
                 f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} \ud83d\udd36 Partial Copay Months</span>"
                 if _n_partial > 0 else ""
             )
@@ -271,7 +271,7 @@ try:
                 "<div style='display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>"
                 "<span style='font-size:1rem;font-weight:700;color:#a78bfa;'>📋 Copay Client</span>"
                 f"<span style='font-size:0.82rem;color:#8892a4;'>${_copay_amount:,.2f}/month</span>"
-                "<span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;"
+                "<span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;'"
                 f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>\u2705 {_n_full} All Paid</span>"
                 + _insurance_badge
                 + _review_badge
@@ -351,12 +351,10 @@ if not summary_df.empty and "client_name_remittance" in summary_df.columns:
     if alt:
         rem_name = alt
 
-# ── Fetch raw remittance records (single source of truth for both tables) ──
 raw_remit_df = queries.client_raw_remittance_claims(conn, rem_name)
 if raw_remit_df.empty:
     raw_remit_df = queries.client_raw_remittance_claims(conn, selected)
 
-# ── Fetch reconciliation data for payroll context ──
 ledger_df = queries.client_ledger(
     conn, rem_name, sort_asc=True, care_type=st.session_state.selected_care_type
 )
@@ -365,7 +363,6 @@ if ledger_df.empty:
         conn, selected, sort_asc=True, care_type=st.session_state.selected_care_type
     )
 
-# Extract per-week payroll data from ledger (reconciliation source)
 payroll_by_week = {}
 if not ledger_df.empty:
     import datetime as _dt
@@ -381,7 +378,6 @@ if not ledger_df.empty:
             "week_result_detailed": grp["week_result_detailed"].iloc[0] if "week_result_detailed" in grp.columns else None,
         }
 
-# Apply filters to raw data
 if selected_week:
     week_end_date = selected_week + datetime.timedelta(days=6)
     raw_remit_df["first_dos_date"] = pd.to_datetime(raw_remit_df["first_dos"]).dt.date
@@ -389,8 +385,10 @@ if selected_week:
         (raw_remit_df["first_dos_date"] >= selected_week) &
         (raw_remit_df["first_dos_date"] <= week_end_date)
     ]
-    # Also filter payroll_by_week to the selected week
-    payroll_by_week = {k: v for k, v in payroll_by_week.items() if k >= selected_week and k <= week_end_date}
+    payroll_by_week = {
+        k: v for k, v in payroll_by_week.items()
+        if selected_week <= k <= week_end_date
+    }
 
 if not show_archived:
     one_year_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
@@ -437,7 +435,6 @@ if not raw_remit_df.empty:
         s = sorted(date_vals)
         return ", ".join(str(d) for d in s) if len(s) <= 3 else f"{s[0]} ... {s[-1]} ({len(s)} payments)"
 
-    # ── Build consolidated weekly view from raw records ──────────────────
     consolidated = []
     for (w_start, w_end), group in raw_remit_df.groupby(["week_start", "week_end"]):
         sum_billed_hrs  = group["billed_hours"].sum()
@@ -445,12 +442,10 @@ if not raw_remit_df.empty:
         sum_charge      = round(group["charge_amount"].sum(), 2)
         sum_payment     = round(group["payment_amount"].sum(), 2)
 
-        # Payroll comes from reconciliation (not remittance)
         payroll_info    = payroll_by_week.get(w_start, {})
         w_payroll_hrs   = payroll_info.get("week_payroll_hours", 0.0)
         w_pending_hrs   = max(round(w_payroll_hrs - sum_paid_hrs, 2), 0.0)
 
-        # Status
         if w_payroll_hrs > 0:
             if sum_paid_hrs > w_payroll_hrs + 0.9:
                 status = "Paid Extra"
@@ -487,7 +482,6 @@ if not raw_remit_df.empty:
             "tcn":                get_tcn_display(group),
         })
 
-    # Add payroll-only weeks (payroll exists but no remittance records yet)
     raw_week_starts = set(raw_remit_df["week_start"].dropna().unique()) if not raw_remit_df.empty else set()
     for ws, info in payroll_by_week.items():
         if ws not in raw_week_starts and info["week_payroll_hours"] > 0:
@@ -687,7 +681,6 @@ else:
         selected_week_start = consolidated_df.iloc[selected_idx]["first_dos"]
         selected_week_end   = consolidated_df.iloc[selected_idx]["last_dos"]
 
-        # Filter raw records for the selected week — same source as summary
         week_claims = raw_remit_df[
             (raw_remit_df["week_start"] == selected_week_start) &
             (raw_remit_df["week_end"] == selected_week_end)
@@ -699,7 +692,6 @@ else:
             week_claims["charge_amount"]  = week_claims["charge_amount"].fillna(0.0).astype(float)
             week_claims["payment_amount"] = week_claims["payment_amount"].fillna(0.0).astype(float)
 
-            # Get payroll hours for this week
             w_payroll = payroll_by_week.get(selected_week_start, {}).get("week_payroll_hours", 0.0)
             week_claims["week_payroll_hours"] = w_payroll
             week_claims["amt_delta"] = (week_claims["charge_amount"] - week_claims["payment_amount"]).clip(lower=0.0).round(2)
