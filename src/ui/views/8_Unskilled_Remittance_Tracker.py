@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from src.config import cfg
-from src.db.connection import get_conn
+from src.ui.components.filters import _get_conn
 from src.db.unskilled_tracker_queries import (
     ANALYST_OPTIONS,
     add_comment,
@@ -50,11 +50,9 @@ def _badge(status: str) -> str:
 
 # ── DB connection (cached per session) ────────────────────────────────────────
 @st.cache_resource
-def _conn():
-    return get_conn(cfg.db_path)
-
-
-conn = _conn()
+def _conn():  # DELETED
+    pass  # unused
+conn = _get_conn()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
