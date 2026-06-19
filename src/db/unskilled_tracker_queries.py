@@ -167,7 +167,7 @@ def refresh_escalation_flags(conn: duckdb.DuckDBPyConnection) -> None:
     """
     Recompute is_escalated and escalation_reason for all non-resolved rows.
     Two triggers:
-      - VOLUME : client has >= ESCALATION_ENTRY_COUNT open entries
+      - VOLUME : client has >= ESCALATION_ENTRY_COUNT open entries within a 2-month window
       - AGE    : entry_date is >= ESCALATION_AGE_MONTHS months ago
     """
     count_threshold = _escalation_count(conn)
@@ -194,9 +194,9 @@ def refresh_escalation_flags(conn: duckdb.DuckDBPyConnection) -> None:
         FROM (
             SELECT
                 id,
-                (COUNT(*) OVER (PARTITION BY client_name) >= ?) AS volume_flag,
+                (                     SELECT COUNT(*)                     FROM unskilled_remit_tracker o                     WHERE o.client_name = base.client_name                       AND o.status != 'RESOLVED'                       AND ABS(DATEDIFF('month', o.entry_date, base.entry_date)) <= 2                 ) >= ? AS volume_flag,
                 (DATEDIFF('month', entry_date, CURRENT_DATE) >= ?)  AS age_flag
-            FROM unskilled_remit_tracker
+            FROM unskilled_remit_tracker base
             WHERE status != 'RESOLVED'
         ) flags
         WHERE t.id = flags.id
