@@ -11,6 +11,11 @@ Assumption: client copay is always paid in full.
 The only question this page answers is: did the insurer pay their expected share?
   Expected insurer share = Billed − Copay
   Shortfall = Expected − Ins. Paid  (positive = underpaid, negative = overpaid)
+
+Row routing:
+  Shortfall > tol              → Follow-Up table (counts toward total shortfall metric)
+  Shortfall < -tol             → Overpayments FYI expander (excluded from metric)
+  |Shortfall| ≤ tol            → Insurance OK expander
 """
 from __future__ import annotations
 import streamlit as st
@@ -49,14 +54,16 @@ def _copay_tol(copay: float) -> float:
 STATUS_CONFIG = {
     "Insurance OK":           {"icon": "✅", "color": "#22c55e", "bg": "#0d2318"},
     "Insurance Underpaid":    {"icon": "⚠️",  "color": "#f59e0b", "bg": "#1f1a0d"},
-    "Unusual – Needs Review": {"icon": "🔴", "color": "#ef4444", "bg": "#1f0d0d"},
+    "Insurer Overpaid":       {"icon": "🔵", "color": "#60a5fa", "bg": "#0d1a2e"},
 }
 
-_INSURANCE_FOLLOW_UP = {"Insurance Underpaid", "Unusual – Needs Review"}
+# Only underpaid rows go in the follow-up / metric
+_FOLLOW_UP_STATUSES  = {"Insurance Underpaid"}
+_OVERPAID_STATUS     = "Insurer Overpaid"
+_OK_STATUS           = "Insurance OK"
 
 
 def _ins_expected(billed: float, copay: float) -> float:
-    """What the insurer is expected to pay = Billed − Copay."""
     return round(billed - copay, 2)
 
 
@@ -70,18 +77,18 @@ def _status(billed: float, ins_paid: float, copay: float) -> str:
     sf = _shortfall(expected, ins_paid)
     tol = _copay_tol(copay)
     if abs(sf) <= tol:
-        return "Insurance OK"
+        return _OK_STATUS
     elif sf > tol:
         return "Insurance Underpaid"
     else:
-        return "Unusual – Needs Review"
+        return _OVERPAID_STATUS
 
 
 def _action_text(status: str, shortfall: float) -> str:
     if status == "Insurance Underpaid":
         return f"Follow up with payer — owes ${shortfall:,.2f}."
-    if status == "Unusual – Needs Review":
-        return f"Review remittance — insurer overpaid by ${abs(shortfall):,.2f}."
+    if status == _OVERPAID_STATUS:
+        return f"Insurer overpaid by ${abs(shortfall):,.2f} — verify remittance."
     return "Insurance paid as expected."
 
 
@@ -134,6 +141,7 @@ def _build_display_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_payer_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Payer summary for follow-up rows only (positive shortfall)."""
     if df.empty:
         return pd.DataFrame(columns=["Payer", "Clients Affected", "Open Months",
                                      "Total Shortfall", "Oldest Open Month"])
@@ -158,6 +166,24 @@ def _build_payer_summary(df: pd.DataFrame) -> pd.DataFrame:
         "total_shortfall": "Total Shortfall",
     }).sort_values("Total Shortfall", ascending=False)
     return grp
+
+
+_DETAIL_COL_CONFIG = {
+    "Client":        st.column_config.TextColumn("Client",         width="medium"),
+    "Insurance":     st.column_config.TextColumn("Payer",          width="medium"),
+    "Month":         st.column_config.TextColumn("Month",          width="small"),
+    "Status":        st.column_config.TextColumn("Status",         width="medium"),
+    "Action":        st.column_config.TextColumn("Action — what to do", width="large"),
+    "Billed":        st.column_config.NumberColumn("Billed",        format="$%.2f"),
+    "Ins. Expected": st.column_config.NumberColumn("Ins. Expected", format="$%.2f",
+                         help="Billed − Copay: what insurer should pay"),
+    "Ins. Paid":     st.column_config.NumberColumn("Ins. Paid",     format="$%.2f"),
+    "Copay":         st.column_config.NumberColumn("Copay",         format="$%.2f"),
+    "Shortfall":     st.column_config.NumberColumn("Shortfall",     format="$%.2f",
+                         help="Ins. Expected − Ins. Paid. Positive = insurer owes more."),
+}
+_DISPLAY_COLS = ["Client", "Insurance", "Month", "Status", "Action",
+                 "Billed", "Ins. Expected", "Ins. Paid", "Copay", "Shortfall"]
 
 
 st.markdown(
@@ -206,9 +232,11 @@ with tab1:
 
         df = df_all.copy() if show_all else df_all[df_all["month_label"] == sel_month].copy()
 
-        followup_df = df[df["status"].isin(_INSURANCE_FOLLOW_UP)].copy()
-        ok_df       = df[df["status"] == "Insurance OK"].copy()
+        followup_df  = df[df["status"].isin(_FOLLOW_UP_STATUSES)].copy()
+        overpaid_df  = df[df["status"] == _OVERPAID_STATUS].copy()
+        ok_df        = df[df["status"] == _OK_STATUS].copy()
 
+        # Total shortfall: only positive shortfalls (underpaid rows)
         total_shortfall  = float(
             sum(_shortfall(_ins_expected(r["total_billed_dollars"], r["copay_amount"]),
                            r["total_paid_dollars"])
@@ -222,10 +250,11 @@ with tab1:
         k2.metric("🏢 Payers Owing",
                   f"{followup_df['insurance'].fillna('—').nunique() if not followup_df.empty else 0}")
         k3.metric("⚠️ Insurance Shortfall", f"${total_shortfall:,.2f}",
-                  help="Ins. Expected − Ins. Paid across all follow-up rows.")
+                  help="Sum of positive shortfalls only (underpaid rows). Overpayments excluded.")
 
         st.markdown("---")
 
+        # --- Follow-Up: underpaid only ---
         if not followup_df.empty:
             payer_summary = _build_payer_summary(followup_df)
             st.markdown("#### 🏢 Payer Summary")
@@ -246,29 +275,13 @@ with tab1:
             st.caption("💡 Click a row to open that client's ledger filtered to the selected month.")
 
             detail_df = _build_display_df(followup_df)
-            display_cols = ["Client", "Insurance", "Month", "Status", "Action",
-                            "Billed", "Ins. Expected", "Ins. Paid", "Copay", "Shortfall"]
-
             sel = st.dataframe(
-                detail_df[display_cols],
+                detail_df[_DISPLAY_COLS],
                 use_container_width=True,
                 hide_index=True,
                 on_select="rerun",
                 selection_mode="single-row",
-                column_config={
-                    "Client":        st.column_config.TextColumn("Client",         width="medium"),
-                    "Insurance":     st.column_config.TextColumn("Payer",          width="medium"),
-                    "Month":         st.column_config.TextColumn("Month",          width="small"),
-                    "Status":        st.column_config.TextColumn("Status",         width="medium"),
-                    "Action":        st.column_config.TextColumn("Action — what to do", width="large"),
-                    "Billed":        st.column_config.NumberColumn("Billed",        format="$%.2f"),
-                    "Ins. Expected": st.column_config.NumberColumn("Ins. Expected", format="$%.2f",
-                                         help="Billed − Copay: what insurer should pay"),
-                    "Ins. Paid":     st.column_config.NumberColumn("Ins. Paid",     format="$%.2f"),
-                    "Copay":         st.column_config.NumberColumn("Copay",         format="$%.2f"),
-                    "Shortfall":     st.column_config.NumberColumn("Shortfall",     format="$%.2f",
-                                         help="Ins. Expected − Ins. Paid. Positive = insurer owes more."),
-                },
+                column_config=_DETAIL_COL_CONFIG,
                 key="copay_followup_table",
             )
 
@@ -296,6 +309,19 @@ with tab1:
         else:
             st.success("✅ No insurance shortfalls for this period.")
 
+        # --- Overpayments: FYI only, collapsed ---
+        if not overpaid_df.empty:
+            with st.expander(f"🔵 Insurer Overpayments — FYI ({len(overpaid_df)})", expanded=False):
+                st.caption("Insurer paid more than expected. No action required, but worth verifying the remittance.")
+                op_display = _build_display_df(overpaid_df)
+                st.dataframe(
+                    op_display[_DISPLAY_COLS],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=_DETAIL_COL_CONFIG,
+                )
+
+        # --- Insurance OK: collapsed ---
         if not ok_df.empty:
             with st.expander(f"✅ Insurance OK — {len(ok_df)} month(s)", expanded=False):
                 ok_display = _build_display_df(ok_df)
@@ -303,24 +329,15 @@ with tab1:
                     ok_display[["Client", "Insurance", "Month", "Billed", "Ins. Expected", "Ins. Paid", "Copay", "Shortfall"]],
                     use_container_width=True,
                     hide_index=True,
-                    column_config={
-                        "Client":        st.column_config.TextColumn("Client",         width="medium"),
-                        "Insurance":     st.column_config.TextColumn("Payer",          width="medium"),
-                        "Month":         st.column_config.TextColumn("Month",          width="small"),
-                        "Billed":        st.column_config.NumberColumn("Billed",        format="$%.2f"),
-                        "Ins. Expected": st.column_config.NumberColumn("Ins. Expected", format="$%.2f"),
-                        "Ins. Paid":     st.column_config.NumberColumn("Ins. Paid",     format="$%.2f"),
-                        "Copay":         st.column_config.NumberColumn("Copay",         format="$%.2f"),
-                        "Shortfall":     st.column_config.NumberColumn("Shortfall",     format="$%.2f"),
-                    },
+                    column_config=_DETAIL_COL_CONFIG,
                 )
 
         with st.expander("ℹ️ How to read this page", expanded=False):
             st.markdown("- **Ins. Expected** = Billed − Copay: the share the insurer is responsible for.")
-            st.markdown("- **Shortfall** = Ins. Expected − Ins. Paid. Positive means insurer still owes money.")
+            st.markdown("- **Shortfall** = Ins. Expected − Ins. Paid. Positive = insurer underpaid (follow up).")
             st.markdown("- **Copay** is assumed always paid in full by the client.")
-            st.markdown("- **Insurance Underpaid**: insurer paid less than their expected share — follow up.")
-            st.markdown("- **Unusual – Needs Review**: insurer paid *more* than expected — verify the remittance.")
+            st.markdown("- **Insurer Overpayments**: insurer paid *more* than expected. Excluded from shortfall total — FYI only.")
+            st.markdown("- **Insurance OK**: within tolerance. No action needed.")
 
 
 with tab2:
