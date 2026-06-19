@@ -34,9 +34,6 @@ def _conn():
 inject_css()
 
 # Copay tolerance: at least $1 OR 5% of copay amount.
-# Prevents small rate-rounding differences (e.g. $17 on a $383 copay)
-# from being flagged as "Insurance Underpaid" when the client actually
-# only owes their copay and the insurer has fully paid its share.
 COPAY_TOL_FIXED = 1.00
 COPAY_TOL_PCT   = 0.05   # 5%
 
@@ -76,7 +73,6 @@ def _status(pending: float, copay: float) -> str:
     if abs(pending) <= COPAY_TOL_FIXED:
         internal = "Fully Paid"
     elif abs(pending - copay) <= tol:
-        # Pending is within tolerance of the copay amount → client owes copay, insurer is square
         internal = "Copay Paid"
     elif pending > copay + tol:
         internal = "Exceeds Copay"
@@ -88,16 +84,19 @@ def _status(pending: float, copay: float) -> str:
 
 
 def _insurance_shortfall(status: str, pending: float, copay: float) -> float:
+    """Net amount the insurer owes (positive = underpaid, negative = overpaid)."""
     if status == "Insurance Underpaid":
-        return max(round(pending - copay, 2), 0.0)
+        # Insurer owes: pending minus the copay the client is responsible for
+        return round(pending - copay, 2)
     if status == "Unusual – Needs Review":
-        return max(round(pending, 2), 0.0)
+        # Unexpected balance — could be negative (overpayment)
+        return round(pending, 2)
     return 0.0
 
 
 def _action_text(status: str, pending: float, copay: float) -> str:
     if status == "Insurance Underpaid":
-        return f"Follow up with payer — owes ${max(pending - copay, 0):,.2f}."
+        return f"Follow up with payer — owes ${pending - copay:,.2f}."
     if status == "Unusual – Needs Review":
         return f"Review remittance — unexpected balance of ${pending:,.2f}."
     if status == "Client Owes Copay":
@@ -130,8 +129,13 @@ def _get_care_type(conn, client_name: str) -> str:
 def _build_display_df(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for _, r in df.iterrows():
-        status = _status(r["pending_dollars"], r["copay_amount"])
-        cfg_s  = STATUS_CONFIG.get(status, {})
+        status  = _status(r["pending_dollars"], r["copay_amount"])
+        cfg_s   = STATUS_CONFIG.get(status, {})
+        copay   = float(r["copay_amount"])
+        billed  = float(r["total_billed_dollars"])
+        paid    = float(r["total_paid_dollars"])
+        # "Insurance Paid" = what insurer actually paid (excl. copay responsibility)
+        # "Total Paid"     = insurance paid + copay (what we'd ideally collect in full)
         rows.append({
             "Client":              r["client_name"],
             "Insurance":           r.get("insurance", "—") or "—",
@@ -139,12 +143,13 @@ def _build_display_df(df: pd.DataFrame) -> pd.DataFrame:
             "yr":                  int(r["yr"]),
             "mo":                  int(r["mo"]),
             "Status":              f"{cfg_s.get('icon', '')} {status}",
-            "Action":              _action_text(status, r["pending_dollars"], r["copay_amount"]),
-            "Insurance Shortfall": _insurance_shortfall(status, r["pending_dollars"], r["copay_amount"]),
-            "Billed":              r["total_billed_dollars"],
-            "Paid":                r["total_paid_dollars"],
+            "Action":              _action_text(status, r["pending_dollars"], copay),
+            "Insurance Shortfall": _insurance_shortfall(status, r["pending_dollars"], copay),
+            "Billed":              billed,
+            "Ins. Paid":           paid,
+            "Copay":               copay,
+            "Total Paid":          round(paid + copay, 2),
             "Pending":             r["pending_dollars"],
-            "Copay/mo":            r["copay_amount"],
             "_status_key":         status,
         })
     out = pd.DataFrame(rows)
@@ -167,7 +172,6 @@ def _build_payer_summary(df: pd.DataFrame) -> pd.DataFrame:
         total_shortfall=("Insurance Shortfall", "sum"),
     ).reset_index()
     oldest = df.copy()
-    # Cast insurance to str so the merge key types match grp (which always has str Insurance)
     oldest["insurance"] = oldest["insurance"].fillna("—").astype(str)
     oldest["_sort"] = oldest["yr"] * 100 + oldest["mo"]
     oldest = oldest.sort_values("_sort").groupby("insurance", dropna=False).first().reset_index()
@@ -270,8 +274,9 @@ with tab1:
             st.caption("💡 Click a row to open that client's ledger filtered to the selected month.")
 
             detail_df = _build_display_df(insurance_df)
+            # Column order: Client | Payer | Month | Status | Action | Shortfall | Billed | Ins.Paid | Copay | Total Paid
             display_cols = ["Client", "Insurance", "Month", "Status", "Action",
-                            "Insurance Shortfall", "Billed", "Paid"]
+                            "Insurance Shortfall", "Billed", "Ins. Paid", "Copay", "Total Paid"]
 
             sel = st.dataframe(
                 detail_df[display_cols],
@@ -285,9 +290,12 @@ with tab1:
                     "Month":               st.column_config.TextColumn("Month",     width="small"),
                     "Status":              st.column_config.TextColumn("Status",    width="medium"),
                     "Action":              st.column_config.TextColumn("Action — what to do", width="large"),
-                    "Insurance Shortfall": st.column_config.NumberColumn("Shortfall", format="$%.2f"),
-                    "Billed":              st.column_config.NumberColumn("Billed",    format="$%.2f"),
-                    "Paid":                st.column_config.NumberColumn("Paid",      format="$%.2f"),
+                    "Insurance Shortfall": st.column_config.NumberColumn("Shortfall",  format="$%.2f"),
+                    "Billed":              st.column_config.NumberColumn("Billed",     format="$%.2f"),
+                    "Ins. Paid":           st.column_config.NumberColumn("Ins. Paid",  format="$%.2f"),
+                    "Copay":               st.column_config.NumberColumn("Copay",      format="$%.2f"),
+                    "Total Paid":          st.column_config.NumberColumn("Total Paid", format="$%.2f",
+                                               help="Insurance paid + client copay"),
                 },
                 key="copay_followup_table",
             )
@@ -326,21 +334,25 @@ with tab1:
                     use_container_width=True,
                     hide_index=True,
                     column_config={
-                        "Client":    st.column_config.TextColumn("Client",    width="medium"),
-                        "Insurance": st.column_config.TextColumn("Payer",     width="medium"),
-                        "Month":     st.column_config.TextColumn("Month",     width="small"),
-                        "Status":    st.column_config.TextColumn("Status",    width="medium"),
-                        "Action":    st.column_config.TextColumn("Reference", width="large"),
-                        "Billed":    st.column_config.NumberColumn("Billed",   format="$%.2f"),
-                        "Paid":      st.column_config.NumberColumn("Paid",     format="$%.2f"),
-                        "Pending":   st.column_config.NumberColumn("Pending",  format="$%.2f"),
-                        "Copay/mo":  st.column_config.NumberColumn("Copay/mo", format="$%.2f"),
+                        "Client":     st.column_config.TextColumn("Client",    width="medium"),
+                        "Insurance":  st.column_config.TextColumn("Payer",     width="medium"),
+                        "Month":      st.column_config.TextColumn("Month",     width="small"),
+                        "Status":     st.column_config.TextColumn("Status",    width="medium"),
+                        "Action":     st.column_config.TextColumn("Reference", width="large"),
+                        "Billed":     st.column_config.NumberColumn("Billed",     format="$%.2f"),
+                        "Ins. Paid":  st.column_config.NumberColumn("Ins. Paid",  format="$%.2f"),
+                        "Copay":      st.column_config.NumberColumn("Copay",      format="$%.2f"),
+                        "Total Paid": st.column_config.NumberColumn("Total Paid", format="$%.2f"),
+                        "Pending":    st.column_config.NumberColumn("Pending",    format="$%.2f"),
                     },
                 )
 
         with st.expander("ℹ️ How to read this page", expanded=False):
             st.markdown("- **Insurance Underpaid**: insurer owes money beyond the assumed copay amount.")
-            st.markdown("- **Unusual – Needs Review**: balance is unexpected and should be reviewed manually.")
+            st.markdown("- **Unusual – Needs Review**: balance is unexpected (may be negative = overpayment).")
+            st.markdown("- **Ins. Paid**: what the insurer actually remitted.")
+            st.markdown("- **Copay**: the fixed monthly copay amount the client owes.")
+            st.markdown("- **Total Paid**: Ins. Paid + Copay — what full collection would look like.")
             st.markdown("- **Other Copay Months**: client-copay-oriented rows kept for reference, not primary follow-up.")
 
 
