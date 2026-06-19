@@ -172,30 +172,15 @@ if not summary_df.empty:
     ytd_pending = float(row.get("ytd_pending_hrs", 0) or 0)
     rate_color  = "#22c55e" if rate >= 95 else "#f59e0b" if rate >= 85 else "#ef4444"
 
-    st.markdown(
-        "<div style='background:linear-gradient(135deg,#1e2130,#252840);border:1px solid #2a2d3e;'"
-        "border-radius:12px;padding:20px 24px;margin-bottom:1.2rem;'"
-        "display:flex;gap:40px;flex-wrap:wrap;align-items:center;'>"
-        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Client</div>"
-        f"<div style='font-size:1.1rem;font-weight:700;color:#e8eaf0;margin-top:2px;'>{selected}</div></div>"
-        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Insurance</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:#4f8ef7;margin-top:2px;'>{ins}</div></div>"
-        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Payroll Hrs</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:#a78bfa;margin-top:2px;'>{ytd_payroll:,.1f}</div></div>"
-        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Billed Hrs</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:#e8eaf0;margin-top:2px;'>{ytd_billed:,.1f}</div></div>"
-        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Paid Hrs</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:#22c55e;margin-top:2px;'>{ytd_paid:,.1f}</div></div>"
-        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Total Pending Hrs</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:#f59e0b;margin-top:2px;'>{ytd_pending:,.1f}</div></div>"
-        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Collection Rate</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:{rate_color};margin-top:2px;'>{rate:.1f}%</div></div>"
-        "<div><div style='font-size:0.7rem;color:#8892a4;text-transform:uppercase;letter-spacing:.08em;'>Weeks Tracked</div>"
-        f"<div style='font-size:1rem;font-weight:600;color:#e8eaf0;margin-top:2px;'>{total_weeks} "
-        f"<span style='color:#f59e0b;font-size:.85rem;'>({fu_weeks} follow-up)</span></div></div>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
+        _summary_cols = st.columns(8)
+        _summary_cols[0].metric("CLIENT", selected)
+        _summary_cols[1].metric("INSURANCE", ins)
+        _summary_cols[2].metric("TOTAL PAYROLL HRS", f"{ytd_payroll:,.1f}" if pd.notna(ytd_payroll) and ytd_payroll != 0 else "—")
+        _summary_cols[3].metric("TOTAL BILLED HRS", f"{ytd_billed:,.1f}")
+        _summary_cols[4].metric("TOTAL PAID HRS", f"{ytd_paid:,.1f}")
+        _summary_cols[5].metric("TOTAL PENDING HRS", f"{ytd_pending:,.1f}")
+        _summary_cols[6].metric("COLLECTION RATE", f"{rate:.1f}%")
+        _summary_cols[7].metric("WEEKS TRACKED", f"{total_weeks} ({fu_weeks} follow-up)")    )
 
 _TILE_STYLE = {
     ("Good",      None):             ("✅",  "#22c55e", "#0d2318", "All Paid – No Action"),
