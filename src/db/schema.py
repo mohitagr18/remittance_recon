@@ -204,6 +204,63 @@ CREATE SEQUENCE IF NOT EXISTS seq_rebill_tracker  START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_review_actions  START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_ingested_files  START 1;
 
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Unskilled Remittance Tracker
+-- ══════════════════════════════════════════════════════════════════════════════
+
+-- Main pending tracker — one row per client+payer+DOS-week combination
+CREATE TABLE IF NOT EXISTS unskilled_remit_tracker (
+    id                  INTEGER PRIMARY KEY,
+    -- Identity (system-populated from payroll/remittance DB)
+    client_name         VARCHAR NOT NULL,       -- "Last, First" from payroll
+    payer               VARCHAR NOT NULL,       -- insurance carrier
+    first_dos           DATE NOT NULL,          -- First Date of Service
+    last_dos            DATE NOT NULL,          -- Last Date of Service
+    -- Hours (system-populated from payroll DB)
+    regular_hours       DECIMAL(10,2) DEFAULT 0,
+    respite_hours       DECIMAL(10,2) DEFAULT 0,
+    -- Pending hours (system-updated on each remittance load)
+    pending_hours       DECIMAL(10,2),          -- regular_hours + respite_hours - total_paid_hours
+    -- Payment (system-stamped when pending_hours < RESOLVED_HOURS_THRESHOLD)
+    payment_date        DATE,                   -- NULL until fully resolved
+    -- Analyst rebill attempts (date + hours entered by analyst)
+    rebill1_date        DATE,
+    rebill1_hours       DECIMAL(10,2),
+    rebill2_date        DATE,
+    rebill2_hours       DECIMAL(10,2),
+    rebill3_date        DATE,
+    rebill3_hours       DECIMAL(10,2),
+    -- Status (auto-derived)
+    status              VARCHAR DEFAULT 'PENDING', -- PENDING | PARTIAL | RESOLVED | ESCALATED
+    is_escalated        BOOLEAN DEFAULT FALSE,
+    escalation_reason   VARCHAR,                -- 'VOLUME' | 'AGE' | 'VOLUME,AGE'
+    -- Audit
+    entry_date          DATE NOT NULL,          -- system-stamped on creation, never editable
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (client_name, payer, first_dos, last_dos)
+);
+
+-- Append-only comment log — one row per comment
+CREATE TABLE IF NOT EXISTS unskilled_remit_comments (
+    id              INTEGER PRIMARY KEY,
+    tracker_id      INTEGER NOT NULL REFERENCES unskilled_remit_tracker(id),
+    author          VARCHAR NOT NULL,       -- analyst name selected from dropdown
+    comment_text    TEXT NOT NULL,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- system-stamped, never editable
+);
+
+-- System config — key/value store for tunable thresholds
+CREATE TABLE IF NOT EXISTS system_config (
+    key         VARCHAR PRIMARY KEY,
+    value       VARCHAR NOT NULL,
+    description VARCHAR,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE SEQUENCE IF NOT EXISTS seq_unskilled_remit_tracker  START 1;
+CREATE SEQUENCE IF NOT EXISTS seq_unskilled_remit_comments START 1;
+
 """
 
 
@@ -213,9 +270,17 @@ def create_all(conn: duckdb.DuckDBPyConnection) -> None:
         stmt = stmt.strip()
         if stmt:
             conn.execute(stmt)
-    # Migrations: add columns that didn't exist in older schema versions
+
+    # ── Column migrations for older schema versions ────────────────────────────
     conn.execute("ALTER TABLE skilled_tracker_clients ADD COLUMN IF NOT EXISTS deactivated_from DATE DEFAULT NULL")
+
+    # ── Seed default system config values if not already present ──────────────
+    conn.execute("""
+        INSERT INTO system_config (key, value, description) VALUES
+            ('RESOLVED_HOURS_THRESHOLD', '2', 'Hours below which a claim is treated as fully paid'),
+            ('ESCALATION_ENTRY_COUNT',   '5', 'Open entries per client that triggers volume escalation'),
+            ('ESCALATION_AGE_MONTHS',   '10', 'Months from entry_date before an item is age-escalated')
+        ON CONFLICT (key) DO NOTHING
+    """)
+
     conn.commit()
-    # NOTE: CHECKPOINT intentionally omitted here — calling it while another
-    # write transaction is active (e.g. during st.switch_page) raises
-    # TransactionContext Error. Checkpoint is handled by DuckDB automatically.
