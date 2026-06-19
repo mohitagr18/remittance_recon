@@ -158,7 +158,7 @@ def sync_payments_from_remittance(conn: duckdb.DuckDBPyConnection) -> int:
             END,
             updated_at = CURRENT_TIMESTAMP
         WHERE t.status != 'RESOLVED'
-    """, [threshold, threshold, threshold]).rowcount
+    """, [threshold, threshold]).rowcount
     conn.commit()
     return updated or 0
 
