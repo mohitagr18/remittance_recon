@@ -271,7 +271,7 @@ else:
 
             with rb1:
                 st.caption("1st Attempt")
-                r1_date  = st.date_input("Date##1",  value=row["rebill1_date"]  or None, key=f"r1d_{tracker_id}")
+                r1_date  = st.date_input("Date##1",  value=None if pd.isna(row["rebill1_date"]) else row["rebill1_date"].date(), key=f"r1d_{tracker_id}")
                 r1_hours = st.number_input("Hours##1", value=float(row["rebill1_hours"] or 0), min_value=0.0, step=0.5, key=f"r1h_{tracker_id}")
                 if st.button("Save", key=f"save1_{tracker_id}"):
                     save_rebill_attempt(conn, tracker_id, 1, r1_date, r1_hours)
@@ -280,7 +280,7 @@ else:
 
             with rb2:
                 st.caption("2nd Attempt")
-                r2_date  = st.date_input("Date##2",  value=row["rebill2_date"]  or None, key=f"r2d_{tracker_id}")
+                r2_date  = st.date_input("Date##2",  value=None if pd.isna(row["rebill2_date"]) else row["rebill2_date"].date(), key=f"r2d_{tracker_id}")
                 r2_hours = st.number_input("Hours##2", value=float(row["rebill2_hours"] or 0), min_value=0.0, step=0.5, key=f"r2h_{tracker_id}")
                 if st.button("Save", key=f"save2_{tracker_id}"):
                     save_rebill_attempt(conn, tracker_id, 2, r2_date, r2_hours)
@@ -289,7 +289,7 @@ else:
 
             with rb3:
                 st.caption("3rd Attempt")
-                r3_date  = st.date_input("Date##3",  value=row["rebill3_date"]  or None, key=f"r3d_{tracker_id}")
+                r3_date  = st.date_input("Date##3",  value=None if pd.isna(row["rebill3_date"]) else row["rebill3_date"].date(), key=f"r3d_{tracker_id}")
                 r3_hours = st.number_input("Hours##3", value=float(row["rebill3_hours"] or 0), min_value=0.0, step=0.5, key=f"r3h_{tracker_id}")
                 if st.button("Save", key=f"save3_{tracker_id}"):
                     save_rebill_attempt(conn, tracker_id, 3, r3_date, r3_hours)
