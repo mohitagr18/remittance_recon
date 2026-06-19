@@ -351,6 +351,12 @@ if not summary_df.empty and "client_name_remittance" in summary_df.columns:
     if alt:
         rem_name = alt
 
+# ── Fetch raw remittance records (single source of truth for both tables) ──
+raw_remit_df = queries.client_raw_remittance_claims(conn, rem_name)
+if raw_remit_df.empty:
+    raw_remit_df = queries.client_raw_remittance_claims(conn, selected)
+
+# ── Fetch reconciliation data for payroll context ──
 ledger_df = queries.client_ledger(
     conn, rem_name, sort_asc=True, care_type=st.session_state.selected_care_type
 )
@@ -359,146 +365,147 @@ if ledger_df.empty:
         conn, selected, sort_asc=True, care_type=st.session_state.selected_care_type
     )
 
+# Extract per-week payroll data from ledger (reconciliation source)
+payroll_by_week = {}
+if not ledger_df.empty:
+    import datetime as _dt
+    def _to_week_start(val):
+        if pd.isna(val): return None
+        dt = pd.to_datetime(val).date()
+        return dt - _dt.timedelta(days=(dt.weekday() - 2) % 7)
+
+    ledger_df["_ws"] = ledger_df["first_dos"].apply(_to_week_start)
+    for ws, grp in ledger_df.groupby("_ws"):
+        payroll_by_week[ws] = {
+            "week_payroll_hours": float(grp["week_payroll_hours"].iloc[0] or 0.0),
+            "week_result_detailed": grp["week_result_detailed"].iloc[0] if "week_result_detailed" in grp.columns else None,
+        }
+
+# Apply filters to raw data
 if selected_week:
     week_end_date = selected_week + datetime.timedelta(days=6)
-    ledger_df["first_dos_date"] = pd.to_datetime(ledger_df["first_dos"]).dt.date
-    ledger_df = ledger_df[
-        (ledger_df["first_dos_date"] >= selected_week) &
-        (ledger_df["first_dos_date"] <= week_end_date)
+    raw_remit_df["first_dos_date"] = pd.to_datetime(raw_remit_df["first_dos"]).dt.date
+    raw_remit_df = raw_remit_df[
+        (raw_remit_df["first_dos_date"] >= selected_week) &
+        (raw_remit_df["first_dos_date"] <= week_end_date)
     ]
+    # Also filter payroll_by_week to the selected week
+    payroll_by_week = {k: v for k, v in payroll_by_week.items() if k >= selected_week and k <= week_end_date}
 
 if not show_archived:
     one_year_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
-    ledger_df = ledger_df[pd.to_datetime(ledger_df["first_dos"]) >= pd.to_datetime(one_year_ago)]
+    raw_remit_df = raw_remit_df[pd.to_datetime(raw_remit_df["first_dos"]) >= pd.to_datetime(one_year_ago)]
+    one_year_date = datetime.date.today() - datetime.timedelta(days=372)
+    payroll_by_week = {k: v for k, v in payroll_by_week.items() if k >= one_year_date}
 
 _netting_log: list[dict] = []
 _netting_by_week: dict   = {}
 
-if not ledger_df.empty:
-    ledger_df["tcn"]             = ledger_df["tcn"].fillna("—")
-    ledger_df["billed_hours"]    = ledger_df["billed_hours"].fillna(0.0).astype(float)
-    ledger_df["paid_hours"]      = ledger_df["paid_hours"].fillna(0.0).astype(float)
-    ledger_df["charge_amount"]   = ledger_df["charge_amount"].fillna(0.0).astype(float)
-    ledger_df["payment_amount"]  = ledger_df["payment_amount"].fillna(0.0).astype(float)
-    ledger_df["amt_delta"]       = ledger_df["charge_amount"] - ledger_df["payment_amount"]
-    ledger_df["week_payroll_hours"] = ledger_df["week_payroll_hours"].fillna(0.0).astype(float)
-    ledger_df["week_paid_hours"]    = ledger_df["week_paid_hours"].fillna(0.0).astype(float)
-    ledger_df["week_pending_hrs"]   = (
-        ledger_df["week_payroll_hours"] - ledger_df["week_paid_hours"]
-    ).clip(lower=0.0).round(2)
-
-    def compute_rec_status(row):
-        tcn_val = row.get("tcn")
-        if pd.isna(tcn_val) or tcn_val == "—" or tcn_val is None:
-            return "No Remittance Received"
-        b_hrs = row.get("billed_hours", 0) or 0
-        p_hrs = row.get("paid_hours", 0) or 0
-        b_amt = row.get("charge_amount", 0) or 0
-        p_amt = row.get("payment_amount", 0) or 0
-        if p_hrs < 0 or p_amt < 0: return "Reversal"
-        if b_hrs > 0:
-            if p_hrs > b_hrs + 0.9:  return "Paid Extra"
-            elif p_hrs >= b_hrs:     return "Paid in Full"
-            elif p_hrs == 0:         return "Denial / Unpaid"
-            else:                    return f"Short Paid ({b_hrs - p_hrs:.1f} hrs remain)"
-        if b_amt > 0:
-            if p_amt > b_amt + 0.9:  return "Paid Extra"
-            elif p_amt >= b_amt:     return "Paid in Full"
-            elif p_amt == 0:         return "Denial / Unpaid"
-            else:                    return "Short Paid"
-        return "Unknown"
-
-    ledger_df["reconciled_status"] = ledger_df.apply(compute_rec_status, axis=1)
+if not raw_remit_df.empty:
+    raw_remit_df["billed_hours"]   = raw_remit_df["billed_hours"].fillna(0.0).astype(float)
+    raw_remit_df["paid_hours"]     = raw_remit_df["paid_hours"].fillna(0.0).astype(float)
+    raw_remit_df["charge_amount"]  = raw_remit_df["charge_amount"].fillna(0.0).astype(float)
+    raw_remit_df["payment_amount"] = raw_remit_df["payment_amount"].fillna(0.0).astype(float)
 
     def to_week_start(val):
         if pd.isna(val): return None
         dt = pd.to_datetime(val).date()
         return dt - datetime.timedelta(days=(dt.weekday() - 2) % 7)
 
-    ledger_df["week_start"] = ledger_df["first_dos"].apply(to_week_start)
-    ledger_df["week_end"]   = ledger_df["week_start"].apply(
+    raw_remit_df["week_start"] = raw_remit_df["first_dos"].apply(to_week_start)
+    raw_remit_df["week_end"]   = raw_remit_df["week_start"].apply(
         lambda d: d + datetime.timedelta(days=6) if d else None
     )
-    ledger_df["first_dos_date"] = pd.to_datetime(ledger_df["first_dos"]).dt.date
-
-    daily_claims_df = ledger_df.copy()
 
     def get_tcn_display(group):
-        tcns = [t for t in group["tcn"].dropna().unique() if t not in ("—", "")]
+        tcns = [t for t in group["tcn"].dropna().unique() if t and str(t).strip()]
         if not tcns: return "—"
         if len(tcns) == 1: return tcns[0]
-        latest = group.loc[group["payment_date"].idxmax()] if group["payment_date"].notna().any() else group.iloc[-1]
-        return latest.get("tcn") or "Multiple"
+        if "payment_date" in group.columns and group["payment_date"].notna().any():
+            latest = group.loc[group["payment_date"].idxmax()]
+            return latest.get("tcn") or "Multiple"
+        return "Multiple"
 
     def get_payment_date_display(group):
-        dates = group["payment_date"].dropna().dt.date.unique()
-        if not len(dates): return None
-        if len(dates) == 1: return dates[0]
-        s = sorted(dates)
+        if "payment_date" not in group.columns:
+            return None
+        dates = group["payment_date"].dropna()
+        if dates.empty:
+            return None
+        date_vals = pd.to_datetime(dates).dt.date.unique()
+        if len(date_vals) == 1: return date_vals[0]
+        s = sorted(date_vals)
         return ", ".join(str(d) for d in s) if len(s) <= 3 else f"{s[0]} ... {s[-1]} ({len(s)} payments)"
 
-    def get_status_display(group):
-        # Always compare payroll vs paid — never billed vs paid.
-        # Billed hours may be inflated by night-shift adjacent-week netting
-        # (e.g. 148 billed vs 74 payroll) which would falsely flag "Short Paid".
-        p_hrs  = float(group["week_payroll_hours"].iloc[0] or 0.0)
-        pd_hrs = float(group["week_paid_hours"].iloc[0] or 0.0)
-        b_hrs  = float(group["week_billed_hours"].iloc[0] or 0.0)
-
-        if p_hrs > 0:
-            # Primary comparison: payroll vs paid
-            if pd_hrs > p_hrs + 0.9:       return "Paid Extra"
-            if pd_hrs >= p_hrs - 0.9:      return "Paid in Full"
-            # Fall back to result_detailed only if paid < payroll
-            detailed = [d for d in group["week_result_detailed"].dropna().unique() if d]
-            if detailed:
-                s = detailed[0]
-                mapped = {"Billed Short": "Billed Short", "Paid Less": "Short Paid",
-                          "Not Billed": "Not Billed", "Payer Reversal": "Payer Reversal"}.get(s, s)
-                return mapped
-            remain = round(p_hrs - pd_hrs, 1)
-            return f"Short Paid ({remain} hrs remain)"
-        else:
-            # No payroll hours — compare billed vs paid
-            if pd_hrs > b_hrs + 0.9:       return "Paid Extra"
-            if pd_hrs >= b_hrs - 0.9:      return "Paid in Full"
-            if pd_hrs < b_hrs - 0.9:       return "Short Paid"
-        return "Paid in Full"
-
+    # ── Build consolidated weekly view from raw records ──────────────────
     consolidated = []
-    for (w_start, w_end), group in ledger_df.groupby(["week_start", "week_end"]):
-        w_billed_hrs = group["week_billed_hours"].iloc[0]
-        w_paid_hrs   = group["week_paid_hours"].iloc[0]
-        rate = None
-        for _, r in group.iterrows():
-            b = abs(float(r.get("billed_hours") or 0.0))
-            c = abs(float(r.get("charge_amount") or 0.0))
-            if b > 0.1 and c > 0.0: rate = c / b; break
-        if rate is None:
-            for _, r in group.iterrows():
-                p = abs(float(r.get("paid_hours") or 0.0))
-                pa = abs(float(r.get("payment_amount") or 0.0))
-                if p > 0.1 and pa > 0.0: rate = pa / p; break
-        sum_payment   = group["payment_amount"].sum()
-        charge_amount = (
-            sum_payment if abs(w_billed_hrs - w_paid_hrs) <= 0.01
-            else round(w_billed_hrs * rate, 2) if rate is not None
-            else group["charge_amount"].max()
-        )
+    for (w_start, w_end), group in raw_remit_df.groupby(["week_start", "week_end"]):
+        sum_billed_hrs  = group["billed_hours"].sum()
+        sum_paid_hrs    = group["paid_hours"].sum()
+        sum_charge      = round(group["charge_amount"].sum(), 2)
+        sum_payment     = round(group["payment_amount"].sum(), 2)
+
+        # Payroll comes from reconciliation (not remittance)
+        payroll_info    = payroll_by_week.get(w_start, {})
+        w_payroll_hrs   = payroll_info.get("week_payroll_hours", 0.0)
+        w_pending_hrs   = max(round(w_payroll_hrs - sum_paid_hrs, 2), 0.0)
+
+        # Status
+        if w_payroll_hrs > 0:
+            if sum_paid_hrs > w_payroll_hrs + 0.9:
+                status = "Paid Extra"
+            elif sum_paid_hrs >= w_payroll_hrs - 0.9:
+                status = "Paid in Full"
+            else:
+                detailed = payroll_info.get("week_result_detailed")
+                if detailed:
+                    status = {"Billed Short": "Billed Short", "Paid Less": "Short Paid",
+                              "Not Billed": "Not Billed", "Payer Reversal": "Payer Reversal"}.get(detailed, detailed)
+                else:
+                    remain = round(w_payroll_hrs - sum_paid_hrs, 1)
+                    status = f"Short Paid ({remain} hrs remain)"
+        else:
+            if sum_paid_hrs > sum_billed_hrs + 0.9:
+                status = "Paid Extra"
+            elif sum_paid_hrs >= sum_billed_hrs - 0.9:
+                status = "Paid in Full"
+            else:
+                status = "Short Paid"
+
         consolidated.append({
             "first_dos":          w_start,
             "last_dos":           w_end,
             "payment_date":       get_payment_date_display(group),
-            "reconciled_status":  get_status_display(group),
-            "week_payroll_hours": group["week_payroll_hours"].iloc[0],
-            "billed_hours":       w_billed_hrs,
-            "paid_hours":         w_paid_hrs,
-            "week_pending_hrs":   group["week_pending_hrs"].iloc[0],
-            "charge_amount":      charge_amount,
+            "reconciled_status":  status,
+            "week_payroll_hours": w_payroll_hrs,
+            "billed_hours":       round(sum_billed_hrs, 2),
+            "paid_hours":         round(sum_paid_hrs, 2),
+            "week_pending_hrs":   w_pending_hrs,
+            "charge_amount":      sum_charge,
             "payment_amount":     sum_payment,
-            "amt_delta":          max(round(charge_amount - sum_payment, 2), 0.0),
+            "amt_delta":          max(round(sum_charge - sum_payment, 2), 0.0),
             "tcn":                get_tcn_display(group),
         })
+
+    # Add payroll-only weeks (payroll exists but no remittance records yet)
+    raw_week_starts = set(raw_remit_df["week_start"].dropna().unique()) if not raw_remit_df.empty else set()
+    for ws, info in payroll_by_week.items():
+        if ws not in raw_week_starts and info["week_payroll_hours"] > 0:
+            we = ws + datetime.timedelta(days=6)
+            consolidated.append({
+                "first_dos":          ws,
+                "last_dos":           we,
+                "payment_date":       None,
+                "reconciled_status":  "No Remittance Received",
+                "week_payroll_hours": info["week_payroll_hours"],
+                "billed_hours":       0.0,
+                "paid_hours":         0.0,
+                "week_pending_hrs":   info["week_payroll_hours"],
+                "charge_amount":      0.0,
+                "payment_amount":     0.0,
+                "amt_delta":          0.0,
+                "tcn":                "—",
+            })
 
     consolidated_df = pd.DataFrame(consolidated)
     if not consolidated_df.empty:
@@ -607,7 +614,7 @@ if not ledger_df.empty:
             consolidated_df["week_pending_hrs"].fillna(0.0).astype(float) > 0.9
         ]
 
-if ledger_df.empty or consolidated_df.empty:
+if raw_remit_df.empty or consolidated_df.empty:
     st.info("No remittance records found for this client.", icon="ℹ️")
 else:
     if _netting_log:
@@ -680,10 +687,44 @@ else:
         selected_week_start = consolidated_df.iloc[selected_idx]["first_dos"]
         selected_week_end   = consolidated_df.iloc[selected_idx]["last_dos"]
 
-        week_claims = daily_claims_df[
-            (daily_claims_df["first_dos_date"] >= selected_week_start) &
-            (daily_claims_df["first_dos_date"] <= selected_week_end)
+        # Filter raw records for the selected week — same source as summary
+        week_claims = raw_remit_df[
+            (raw_remit_df["week_start"] == selected_week_start) &
+            (raw_remit_df["week_end"] == selected_week_end)
         ].copy()
+
+        if not week_claims.empty:
+            week_claims["billed_hours"]   = week_claims["billed_hours"].fillna(0.0).astype(float)
+            week_claims["paid_hours"]     = week_claims["paid_hours"].fillna(0.0).astype(float)
+            week_claims["charge_amount"]  = week_claims["charge_amount"].fillna(0.0).astype(float)
+            week_claims["payment_amount"] = week_claims["payment_amount"].fillna(0.0).astype(float)
+
+            # Get payroll hours for this week
+            w_payroll = payroll_by_week.get(selected_week_start, {}).get("week_payroll_hours", 0.0)
+            week_claims["week_payroll_hours"] = w_payroll
+            week_claims["amt_delta"] = (week_claims["charge_amount"] - week_claims["payment_amount"]).clip(lower=0.0).round(2)
+
+            def _claim_status(row):
+                p_hrs = float(row.get("paid_hours") or 0)
+                b_hrs = float(row.get("billed_hours") or 0)
+                p_amt = float(row.get("payment_amount") or 0)
+                b_amt = float(row.get("charge_amount") or 0)
+                tx    = str(row.get("transaction_type") or "")
+                if p_hrs < 0 or p_amt < 0:
+                    return "Reversal"
+                if b_hrs > 0:
+                    if p_hrs >= b_hrs:      return "Paid in Full"
+                    elif p_hrs == 0 and p_amt == 0: return "Denial / Unpaid"
+                    else:                   return f"Short Paid ({b_hrs - p_hrs:.1f} hrs remain)"
+                if b_amt > 0:
+                    if p_amt >= b_amt:      return "Paid in Full"
+                    elif p_amt == 0:        return "Denial / Unpaid"
+                    else:                   return "Short Paid"
+                if "Denial" in tx or "Reversal" in tx:
+                    return "Denial / Reversal"
+                return "Pending"
+
+            week_claims["reconciled_status"] = week_claims.apply(_claim_status, axis=1)
 
         _drill_netting_note = ""
         if selected_week_start in _netting_by_week:
@@ -704,27 +745,32 @@ else:
             unsafe_allow_html=True,
         )
 
-        daily_display_cols = [
-            "first_dos", "payment_date", "reconciled_status", "week_payroll_hours",
-            "billed_hours", "paid_hours", "charge_amount", "payment_amount", "amt_delta", "tcn",
-        ]
-        st.dataframe(
-            week_claims.sort_values("first_dos")[daily_display_cols],
-            use_container_width=True,
-            hide_index=True,
-            height=min((len(week_claims) + 1) * 35 + 3, 250),
-            column_config={
-                "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
-                "payment_date":       st.column_config.DateColumn("Payment Date"),
-                "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
-                "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
-                "billed_hours":       st.column_config.NumberColumn("Billed Hrs",  format="%.1f"),
-                "paid_hours":         st.column_config.NumberColumn("Paid Hrs",    format="%.1f"),
-                "charge_amount":      st.column_config.NumberColumn("Billed $",    format="$%.2f"),
-                "payment_amount":     st.column_config.NumberColumn("Paid $",      format="$%.2f"),
-                "amt_delta":          st.column_config.NumberColumn("$ Delta",     format="$%.2f"),
-                "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
-            },
-        )
+        if week_claims.empty:
+            st.info("No remittance records found for this week.", icon="ℹ️")
+        else:
+            daily_display_cols = [
+                "first_dos", "payment_date", "reconciled_status", "week_payroll_hours",
+                "billed_hours", "paid_hours", "charge_amount", "payment_amount", "amt_delta", "tcn",
+            ]
+            daily_display_cols = [c for c in daily_display_cols if c in week_claims.columns]
+
+            st.dataframe(
+                week_claims.sort_values("first_dos")[daily_display_cols],
+                use_container_width=True,
+                hide_index=True,
+                height=min((len(week_claims) + 1) * 35 + 3, 250),
+                column_config={
+                    "first_dos":          st.column_config.DateColumn("Date of Service (DOS)"),
+                    "payment_date":       st.column_config.DateColumn("Payment Date"),
+                    "reconciled_status":  st.column_config.TextColumn("Daily Status", width="medium"),
+                    "week_payroll_hours": st.column_config.NumberColumn("Payroll Hrs", format="%.1f"),
+                    "billed_hours":       st.column_config.NumberColumn("Billed Hrs",  format="%.1f"),
+                    "paid_hours":         st.column_config.NumberColumn("Paid Hrs",    format="%.1f"),
+                    "charge_amount":      st.column_config.NumberColumn("Billed $",    format="$%.2f"),
+                    "payment_amount":     st.column_config.NumberColumn("Paid $",      format="$%.2f"),
+                    "amt_delta":          st.column_config.NumberColumn("$ Delta",     format="$%.2f"),
+                    "tcn":                st.column_config.TextColumn("Check/EFT # (TCN)", width="medium"),
+                },
+            )
     else:
         st.info("💡 Click on any week row in the table above to view daily claim details, TCNs, and payment dates.", icon="ℹ️")

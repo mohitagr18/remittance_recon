@@ -701,11 +701,11 @@ def client_ledger(
 def client_raw_remittance_claims(
     conn: duckdb.DuckDBPyConnection,
     client_name: str,
-    week_start: str,
-    week_end: str,
+    week_start: str | None = None,
+    week_end: str | None = None,
     care_type: str | None = None,
 ) -> pd.DataFrame:
-    """Return raw, un-aggregated remittance records for a client and DOS week range.
+    """Return raw, un-aggregated remittance records for a client.
 
     Unlike client_ledger (which aggregates via rem_daily/rem_agg and filters by
     is_latest), this returns every individual remittance row exactly as stored,
@@ -713,7 +713,7 @@ def client_raw_remittance_claims(
     master remittance Excel.
 
     No is_latest filtering is applied — all records for the client and date range
-    are returned.
+    are returned.  When week_start/week_end are None, all records are returned.
     """
     import re
     stripped_name = re.sub(
@@ -721,7 +721,16 @@ def client_raw_remittance_claims(
         "", client_name.strip()
     )
 
-    sql = """
+    date_filter = ""
+    date_params = []
+    if week_start is not None:
+        date_filter += "\n        AND r.first_dos >= ?"
+        date_params.append(week_start)
+    if week_end is not None:
+        date_filter += "\n        AND r.first_dos <= ?"
+        date_params.append(week_end)
+
+    sql = f"""
         SELECT
             r.first_dos,
             r.last_dos,
@@ -746,12 +755,10 @@ def client_raw_remittance_claims(
                       = UPPER(?)
                    OR UPPER(client_name_remittance) = UPPER(?)
             )
-        )
-        AND r.first_dos >= ?
-        AND r.first_dos <= ?
+        ){date_filter}
         ORDER BY r.first_dos, r.payment_date, r.batch
     """
-    params = [stripped_name, stripped_name, stripped_name, week_start, week_end]
+    params = [stripped_name, stripped_name, stripped_name] + date_params
     return conn.execute(sql, params).df()
 
 def client_weekly_recon_with_dos(
