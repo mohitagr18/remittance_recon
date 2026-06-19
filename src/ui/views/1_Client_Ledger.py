@@ -172,15 +172,15 @@ if not summary_df.empty:
     ytd_pending = float(row.get("ytd_pending_hrs", 0) or 0)
     rate_color  = "#22c55e" if rate >= 95 else "#f59e0b" if rate >= 85 else "#ef4444"
 
-        _summary_cols = st.columns(8)
-        _summary_cols[0].metric("CLIENT", selected)
-        _summary_cols[1].metric("INSURANCE", ins)
-        _summary_cols[2].metric("TOTAL PAYROLL HRS", f"{ytd_payroll:,.1f}" if pd.notna(ytd_payroll) and ytd_payroll != 0 else "—")
-        _summary_cols[3].metric("TOTAL BILLED HRS", f"{ytd_billed:,.1f}")
-        _summary_cols[4].metric("TOTAL PAID HRS", f"{ytd_paid:,.1f}")
-        _summary_cols[5].metric("TOTAL PENDING HRS", f"{ytd_pending:,.1f}")
-        _summary_cols[6].metric("COLLECTION RATE", f"{rate:.1f}%")
-        _summary_cols[7].metric("WEEKS TRACKED", f"{total_weeks} ({fu_weeks} follow-up)")    )
+    _summary_cols = st.columns(8)
+    _summary_cols[0].metric("CLIENT", selected)
+    _summary_cols[1].metric("INSURANCE", ins)
+    _summary_cols[2].metric("TOTAL PAYROLL HRS", f"{ytd_payroll:,.1f}" if pd.notna(ytd_payroll) and ytd_payroll != 0 else "—")
+    _summary_cols[3].metric("TOTAL BILLED HRS", f"{ytd_billed:,.1f}")
+    _summary_cols[4].metric("TOTAL PAID HRS", f"{ytd_paid:,.1f}")
+    _summary_cols[5].metric("TOTAL PENDING HRS", f"{ytd_pending:,.1f}")
+    _summary_cols[6].metric("COLLECTION RATE", f"{rate:.1f}%")
+    _summary_cols[7].metric("WEEKS TRACKED", f"{total_weeks} ({fu_weeks} follow-up)") 
 
 _TILE_STYLE = {
     ("Good",      None):             ("✅",  "#22c55e", "#0d2318", "All Paid – No Action"),
@@ -226,13 +226,11 @@ try:
         set(_copay_clients_df["client_name"].str.upper().tolist())
         if not _copay_clients_df.empty else set()
     )
-    _is_copay_client = selected.upper() in _copay_names
+    _is_copay_client = strip_suffix(selected).upper().strip() in _copay_names
 
     if _is_copay_client:
         _copay_df     = copay_monthly_status(conn)
-        _client_copay = _copay_df[
-            _copay_df["client_name"].str.upper() == selected.upper()
-        ].copy()
+        _client_copay = _copay_df[_copay_df["client_name"].str.upper().str.strip() == strip_suffix(selected).upper().strip()].copy()
 
         if not _client_copay.empty:
             _client_copay = _client_copay.sort_values(["yr", "mo"])
