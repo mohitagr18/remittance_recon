@@ -1,6 +1,6 @@
 """
 src/ui/views/6_Skilled_Tracker.py
-Skilled Billing Tracker — monthly/weekly view built from live DuckDB data.
+EVV Tracker — monthly/weekly view built from live DuckDB data.
 """
 from __future__ import annotations
 import sys
@@ -19,7 +19,7 @@ from src.config import cfg
 from src.ui.components.filters import _get_conn
 import src.db.queries as Q
 
-# ── constants ─────────────────────────────────────────────────────────────────
+# ── constants ───────────────────────────────────────────────────────────────────────────────
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 YEAR = 2026
@@ -42,14 +42,12 @@ def _weeks_in_month(year: int, month: int) -> list[tuple[date, date]]:
     """Return (week_start, week_end) tuples for billing weeks overlapping the given month."""
     weeks = []
     d = date(year, month, 1)
-    # Move to Monday of first week
     d -= timedelta(days=d.weekday())
     while True:
         ws = d
         we = d + timedelta(days=6)
         if ws.month > month and ws.year >= year:
             break
-        # Include if any day of the week falls in the target month
         month_start = date(year, month, 1)
         next_month = date(year + (month // 12), (month % 12) + 1, 1)
         if we >= month_start and ws < next_month:
@@ -61,14 +59,24 @@ def _weeks_in_month(year: int, month: int) -> list[tuple[date, date]]:
 
 
 def _fmt_week(ws: date, we: date) -> str:
-    return f"{ws.strftime('%m/%d/%y')}–{we.strftime('%m/%d/%y')}"
+    return f"{ws.strftime('%m/%d/%y')}\u2013{we.strftime('%m/%d/%y')}"
 
 
 def _fmt_usd(v: float) -> str:
     return f"${v:,.2f}"
 
 
-# ── Comments panel ─────────────────────────────────────────────────────────────
+def _fmt_usd_compact(v: float) -> str:
+    """Format dollar amounts compactly: $x.xx M for millions, $x.xx K for thousands."""
+    abs_v = abs(v)
+    if abs_v >= 1_000_000:
+        return f"${v / 1_000_000:.2f} M"
+    if abs_v >= 1_000:
+        return f"${v / 1_000:.2f} K"
+    return f"${v:,.2f}"
+
+
+# ── Comments panel ───────────────────────────────────────────────────────────────────────────
 def _render_comments(conn, display_name: str, bill_code: str, billing_week: str, sel_key: str):
     """Post-only form. Comments are displayed inline in the table."""
     key_prefix  = f"cmt_{display_name}_{bill_code}_{billing_week}".replace(" ", "_").replace("/", "_").replace("'", "")
@@ -90,7 +98,7 @@ def _render_comments(conn, display_name: str, bill_code: str, billing_week: str,
                 st.warning("Both comment and your name are required.")
 
 
-# ── Weekly table ───────────────────────────────────────────────────────────────
+# ── Weekly table ────────────────────────────────────────────────────────────────────────────────
 def _render_week(conn, ws: date, we: date, month_idx: int = 0):
     week_label = _fmt_week(ws, we)
     df = Q.get_tracker_week_data(conn, str(ws), str(we))
@@ -99,7 +107,7 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
         st.info("No data for this week.")
         return
 
-    # ── Status filter ──────────────────────────────────────────────────────────
+    # ── Status filter ──────────────────────────────────────────────────────────────────────
     all_statuses = list(STATUS_SORT.keys())
     filter_key = f"status_filter_{month_idx}_{ws}_{we}"
     selected_statuses = st.multiselect(
@@ -116,24 +124,21 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
         st.info("No rows match the selected filter.")
         return
 
-    # ── Sort by status priority ────────────────────────────────────────────────
+    # ── Sort by status priority ────────────────────────────────────────────────────────────────────
     df = df.copy()
     df["_sort"] = df["status"].map(STATUS_SORT).fillna(99)
     df = df.sort_values("_sort").drop(columns=["_sort"]).reset_index(drop=True)
 
-    # Build display dataframe
     display_cols = ["display_name", "bill_code", "payroll_hrs", "units_billed",
                     "billed_amt", "paid_amt", "pending_amt", "status"]
     display_df = df[display_cols].copy()
     display_df.columns = ["Client", "Bill Code", "Payroll Hrs", "Units Billed",
                           "Billed $", "Paid $", "Pending $", "Status"]
 
-    # Format currency
     for col in ["Billed $", "Paid $", "Pending $"]:
         display_df[col] = display_df[col].apply(_fmt_usd)
     display_df["Status"] = display_df["Status"].map(lambda s: f"{STATUS_COLORS.get(s, '')} {s}")
 
-    # Build Comments column: full text list per row
     def _comment_text(row):
         cdf = Q.get_tracker_comments(conn, row["display_name"], row["bill_code"], week_label)
         if cdf.empty:
@@ -146,7 +151,6 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
 
     display_df["Comments"] = df.apply(_comment_text, axis=1)
 
-    # Totals row (always from full unfiltered df for accurate totals)
     full_df = Q.get_tracker_week_data(conn, str(ws), str(we))
     totals = {
         "Client": "TOTAL", "Bill Code": "", "Payroll Hrs": round(full_df["payroll_hrs"].sum(), 2),
@@ -167,23 +171,20 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
         }
     )
 
-    # Row selector for comments — resets to "— select —" after posting
     sel_key = f"sel_{month_idx}_{ws}_{we}"
     reset_flag = f"reset_{sel_key}"
-    # If a comment was just posted, clear the flag and reset the index before widget renders
     if st.session_state.get(reset_flag):
         del st.session_state[reset_flag]
         if sel_key in st.session_state:
             del st.session_state[sel_key]
     client_options = df["display_name"] + " (" + df["bill_code"] + ")"
-    selected = st.selectbox("Add comment for:", ["— select a client —"] + list(client_options),
+    selected = st.selectbox("Add comment for:", ["\u2014 select a client \u2014"] + list(client_options),
                             key=sel_key)
-    if selected and selected != "— select a client —":
+    if selected and selected != "\u2014 select a client \u2014":
         idx = list(client_options).index(selected)
         row = df.iloc[idx]
         _render_comments(conn, row["display_name"], row["bill_code"], week_label, sel_key=sel_key)
 
-    # ── Manage clients ────────────────────────────────────────────────────────
     with st.expander("⚙️ Manage Clients"):
         add_tab, remove_tab, restore_tab = st.tabs(["➕ Add Client", "🗑 Remove Client", "↩️ Restore Client"])
 
@@ -210,9 +211,9 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
                 st.info("No active clients to remove.")
             else:
                 opts = (active["display_name"] + " (" + active["bill_code"] + ")").tolist()
-                sel  = st.selectbox("Select client to remove:", ["— select —"] + opts,
+                sel  = st.selectbox("Select client to remove:", ["\u2014 select \u2014"] + opts,
                                     key=f"remove_sel_{month_idx}_{ws}_{we}")
-                if sel and sel != "— select —":
+                if sel and sel != "\u2014 select \u2014":
                     idx_r = opts.index(sel)
                     row_r = active.iloc[idx_r]
                     st.warning(f"⚠️ **{sel}** will be hidden from **{ws}** onwards. All prior data is preserved.")
@@ -228,10 +229,10 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
                 st.info("No deactivated clients.")
             else:
                 opts2 = (inactive["display_name"] + " (" + inactive["bill_code"] + ")"
-                         + " — deactivated from " + inactive["deactivated_from"].astype(str)).tolist()
-                sel2  = st.selectbox("Select client to restore:", ["— select —"] + opts2,
+                         + " \u2014 deactivated from " + inactive["deactivated_from"].astype(str)).tolist()
+                sel2  = st.selectbox("Select client to restore:", ["\u2014 select \u2014"] + opts2,
                                      key=f"restore_sel_{month_idx}_{ws}_{we}")
-                if sel2 and sel2 != "— select —":
+                if sel2 and sel2 != "\u2014 select \u2014":
                     idx2_r = opts2.index(sel2)
                     row2_r = inactive.iloc[idx2_r]
                     if st.button(f"Restore {row2_r['display_name']}", key=f"confirm_restore_{month_idx}_{ws}_{we}"):
@@ -240,14 +241,11 @@ def _render_week(conn, ws: date, we: date, month_idx: int = 0):
                         st.rerun()
 
 
-
-# ── Heatmap chart ──────────────────────────────────────────────────────────────
+# ── Heatmap chart ────────────────────────────────────────────────────────────────────────────────
 def _build_heatmap(df) -> go.Figure:
-    """Build client × month collection-rate heatmap from get_tracker_heatmap() output."""
     month_keys = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
     month_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
-    # Only include months up to today
     from datetime import date as _date
     cur_month = _date.today().month
     month_keys   = month_keys[:cur_month]
@@ -262,7 +260,7 @@ def _build_heatmap(df) -> go.Figure:
             p = row.get(f"{mk}_p", 0) or 0
             if b == 0:
                 row_z.append(None)
-                row_t.append("—")
+                row_t.append("\u2014")
             else:
                 rate = min(p / b * 100, 100)
                 row_z.append(rate)
@@ -278,11 +276,11 @@ def _build_heatmap(df) -> go.Figure:
         texttemplate="%{text}",
         hovertemplate="<b>%{y}</b><br>%{x}: %{text}<extra></extra>",
         colorscale=[
-            [0.0,  "#a12c7b"],   # Red  — 0%
-            [0.5,  "#d19900"],   # Gold — 50%
-            [0.75, "#edb336"],   # Yellow — 75%
-            [0.95, "#437a22"],   # Green — 95%
-            [1.0,  "#01696f"],   # Teal — 100%
+            [0.0,  "#a12c7b"],
+            [0.5,  "#d19900"],
+            [0.75, "#edb336"],
+            [0.95, "#437a22"],
+            [1.0,  "#01696f"],
         ],
         zmin=0, zmax=100,
         colorbar=dict(
@@ -294,7 +292,7 @@ def _build_heatmap(df) -> go.Figure:
     ))
 
     fig.update_layout(
-        title=dict(text="Collection Rate by Client × Month", font=dict(color="#cdccca", size=15)),
+        title=dict(text="Collection Rate by Client \u00d7 Month", font=dict(color="#cdccca", size=15)),
         paper_bgcolor="#1c1b19",
         plot_bgcolor="#1c1b19",
         font=dict(color="#cdccca", size=11),
@@ -305,7 +303,7 @@ def _build_heatmap(df) -> go.Figure:
     )
     return fig
 
-# ── Summary (YTD) ──────────────────────────────────────────────────────────────
+# ── Summary (YTD) ───────────────────────────────────────────────────────────────────────────────
 def _render_summary(conn):
     df = Q.get_tracker_ytd(conn, YEAR)
     if df.empty:
@@ -318,21 +316,19 @@ def _render_summary(conn):
     coll_rate     = (total_paid / total_billed * 100) if total_billed else 0
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total Billed YTD",   _fmt_usd(total_billed))
-    k2.metric("Total Paid YTD",     _fmt_usd(total_paid))
-    k3.metric("Total Pending YTD",  _fmt_usd(total_pending))
-    k4.metric("Collection Rate",    f"{coll_rate:.1f}%")
+    k1.metric("Total Billed YTD",  _fmt_usd_compact(total_billed))
+    k2.metric("Total Paid YTD",    _fmt_usd_compact(total_paid))
+    k3.metric("Total Pending YTD", _fmt_usd_compact(total_pending))
+    k4.metric("Collection Rate",   f"{coll_rate:.1f}%")
 
-    # ── Heatmap ───────────────────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("Collection Rate by Client × Month")
+    st.subheader("Collection Rate by Client \u00d7 Month")
     heatmap_df = Q.get_tracker_heatmap(conn, YEAR)
     if not heatmap_df.empty:
         st.plotly_chart(_build_heatmap(heatmap_df), use_container_width=True)
     else:
         st.info("No remittance data yet to build heatmap.")
 
-    # ── YTD Table ─────────────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("YTD by Client")
 
@@ -353,13 +349,13 @@ def _render_summary(conn):
     st.dataframe(ytd_display, use_container_width=True, hide_index=True)
 
 
-# ── Main page ──────────────────────────────────────────────────────────────────
+# ── Main page ──────────────────────────────────────────────────────────────────────────────────
 def main():
-    st.title("📊 Skilled Billing Tracker")
+    st.title("📊 EVV Tracker")
     conn = _get_conn()
 
     current_month = date.today().month
-    available_months = MONTHS[:current_month]  # Jan..current month
+    available_months = MONTHS[:current_month]
 
     top_tabs = st.tabs(["📈 Summary (YTD)"] + [f"{m} {YEAR}" for m in available_months])
 
