@@ -33,7 +33,18 @@ def _conn():
 
 inject_css()
 
-COPAY_TOL = 1.00
+# Copay tolerance: at least $1 OR 5% of copay amount.
+# Prevents small rate-rounding differences (e.g. $17 on a $383 copay)
+# from being flagged as "Insurance Underpaid" when the client actually
+# only owes their copay and the insurer has fully paid its share.
+COPAY_TOL_FIXED = 1.00
+COPAY_TOL_PCT   = 0.05   # 5%
+
+
+def _copay_tol(copay: float) -> float:
+    """Dynamic tolerance: max($1, 5% of copay amount)."""
+    return max(COPAY_TOL_FIXED, copay * COPAY_TOL_PCT)
+
 
 STATUS_CONFIG = {
     "Client Owes Copay":         {"icon": "💳", "color": "#a78bfa", "bg": "#1e1535",
@@ -61,13 +72,15 @@ _INSURANCE_STATUSES     = {"Insurance Underpaid", "Unusual – Needs Review"}
 
 
 def _status(pending: float, copay: float) -> str:
-    if abs(pending) <= COPAY_TOL:
+    tol = _copay_tol(copay)
+    if abs(pending) <= COPAY_TOL_FIXED:
         internal = "Fully Paid"
-    elif abs(pending - copay) <= COPAY_TOL:
+    elif abs(pending - copay) <= tol:
+        # Pending is within tolerance of the copay amount → client owes copay, insurer is square
         internal = "Copay Paid"
-    elif pending > copay + COPAY_TOL:
+    elif pending > copay + tol:
         internal = "Exceeds Copay"
-    elif 0 < pending < copay - COPAY_TOL:
+    elif 0 < pending < copay - tol:
         internal = "Partial Copay"
     else:
         internal = "Follow Up"
