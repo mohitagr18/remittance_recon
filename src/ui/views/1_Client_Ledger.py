@@ -48,7 +48,6 @@ st.markdown(
 
 conn = _get_conn()
 
-# Consume copay deep-link before anything else — pop so it doesn't persist on refresh
 _copay_month_filter: tuple[int, int] | None = st.session_state.pop(
     "copay_ledger_month_filter", None
 )
@@ -154,7 +153,6 @@ selected = st.session_state.selected_client_ledger
 if not selected:
     st.stop()
 
-# Deep-link banner
 if _copay_month_filter:
     _fyr, _fmo = _copay_month_filter
     _month_name = datetime.date(int(_fyr), int(_fmo), 1).strftime("%B %Y")
@@ -211,10 +209,6 @@ _TILE_STYLE = {
 
 
 def _month_tile(row) -> str:
-    """Return an HTML string for a single copay month tile.
-    Built as plain string concatenation — NOT inside an outer f-string —
-    so curly-brace CSS values don't get misinterpreted.
-    """
     key = (row["copay_status"], row.get("copay_note"))
     icon, color, bg, label = _TILE_STYLE.get(
         key, ("\u2753", "#8892a4", "#1e2130", row["copay_status"])
@@ -224,13 +218,11 @@ def _month_tile(row) -> str:
     paid    = float(row.get("total_paid_dollars", 0) or 0)
     copay_a = float(row.get("copay_amount", 0) or 0)
     excess  = pending - copay_a if pending > copay_a + 1 else None
-
     excess_html = (
         '<div style="color:#f59e0b;font-size:0.68rem;margin-top:3px;">'
         f'+${excess:,.2f} insurance shortfall</div>'
         if excess else ""
     )
-
     return (
         f'<div style="background:{bg};border:1px solid {color};border-radius:10px;'
         f'padding:12px 14px;min-width:175px;flex:0 0 auto;">'
@@ -262,15 +254,11 @@ try:
 
         if not _client_copay.empty:
             _client_copay = _client_copay.sort_values(["yr", "mo"])
-
             _copay_amount = float(_client_copay.iloc[0].get("copay_amount", 0) or 0)
             _n_full    = int((_client_copay["copay_note"].isna() & (_client_copay["copay_status"] == "Good")).sum())
             _n_exceeds = int((_client_copay["copay_note"] == "Exceeds Copay").sum())
             _n_partial = int((_client_copay["copay_note"] == "Partial Copay").sum())
-
-            # Pre-build tiles and badges as plain strings before any outer f-string
             _tiles_html = "".join(_month_tile(row) for _, row in _client_copay.iterrows())
-
             _insurance_badge = (
                 "<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;"
                 f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} \u26a0\ufe0f Insurance Underpaid</span>"
@@ -281,7 +269,6 @@ try:
                 f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} \ud83d\udd36 Partial Copay Months</span>"
                 if _n_partial > 0 else ""
             )
-
             st.markdown(
                 "<div style='margin-bottom:1rem;'>"
                 "<div style='display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>"
@@ -316,7 +303,6 @@ if not client_recon.empty:
     if not show_archived:
         one_year_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
         client_recon = client_recon[client_recon["week_start_date"] >= one_year_ago]
-
     if not client_recon.empty:
         num_weeks = len(client_recon)
         if num_weeks > 20:
@@ -387,6 +373,10 @@ if selected_week:
 if not show_archived:
     one_year_ago = (datetime.date.today() - datetime.timedelta(days=372)).strftime("%Y-%m-%d")
     ledger_df = ledger_df[pd.to_datetime(ledger_df["first_dos"]) >= pd.to_datetime(one_year_ago)]
+
+# Will be populated by the netting pass; keyed by first_dos date for O(1) lookup
+_netting_log: list[dict] = []          # summary rows for the expander table
+_netting_by_week: dict = {}            # first_dos -> netting detail string for drill-down
 
 if not ledger_df.empty:
     ledger_df["tcn"]             = ledger_df["tcn"].fillna("—")
@@ -508,20 +498,14 @@ if not ledger_df.empty:
 
     consolidated_df = pd.DataFrame(consolidated)
     if not consolidated_df.empty:
-        # ── Sort chronologically for netting pass ──────────────────────────
+        # ── Sort ascending for left-to-right netting pass ──────────────────
         consolidated_df = consolidated_df.sort_values("first_dos", ascending=True).reset_index(drop=True)
 
         # ── Adjacent-week min-netting (display layer only) ─────────────────
-        # Night shifts crossing midnight at a Tue/Wed week boundary cause
-        # payroll to credit hours to one week while remittance credits the
-        # adjacent week.  This creates alternating Short Paid / Paid Extra
-        # patterns that net to ~zero across consecutive weeks.
-        # We detect these pairs and reduce the apparent shortage/excess
-        # symmetrically so the ledger shows the true economic picture.
         _payroll = consolidated_df["week_payroll_hours"].fillna(0.0).astype(float)
         _paid    = consolidated_df["paid_hours"].fillna(0.0).astype(float)
         _billed  = consolidated_df["billed_hours"].fillna(0.0).astype(float)
-        _delta   = _paid - _payroll   # negative = short paid, positive = excess
+        _delta   = _paid - _payroll
 
         _adj = [0.0] * len(consolidated_df)
 
@@ -530,50 +514,90 @@ if not ledger_df.empty:
             d_next = _delta.iloc[i+1] + _adj[i+1]
 
             if d_cur < -0.9 and d_next > 0.9:
-                # current short, next excess — net them
                 net = min(abs(d_cur), d_next)
                 _adj[i]   += net
                 _adj[i+1] -= net
             elif d_cur > 0.9 and d_next < -0.9:
-                # current excess, next short — net them
                 net = min(d_cur, abs(d_next))
                 _adj[i]   -= net
                 _adj[i+1] += net
 
+        # ── Apply adjustments + build netting log ──────────────────────────
         for i in range(len(consolidated_df)):
             if abs(_adj[i]) < 0.01:
                 continue
-            idx    = consolidated_df.index[i]
-            p_hrs  = float(_payroll.iloc[i])
-            pd_eff = float(_paid.iloc[i]) + _adj[i]   # effective paid after netting
-            b_hrs  = float(_billed.iloc[i])
 
-            # Adjust pending hours (cannot go below 0)
-            old_pending = float(consolidated_df.at[idx, "week_pending_hrs"])
-            new_pending = max(round(old_pending - _adj[i], 2), 0.0)
+            idx     = consolidated_df.index[i]
+            p_hrs   = float(_payroll.iloc[i])
+            pd_raw  = float(_paid.iloc[i])
+            pd_eff  = pd_raw + _adj[i]
+            b_hrs   = float(_billed.iloc[i])
+            this_week = consolidated_df.at[idx, "first_dos"]
+
+            # Fix pending hours — clamp to 0 when fully netted
+            new_pending = max(round(p_hrs - pd_eff, 2), 0.0) if p_hrs > 0 else 0.0
             consolidated_df.at[idx, "week_pending_hrs"] = new_pending
 
-            # Recompute status label from effective paid
+            # Recompute status with "(adjusted)" suffix
             if p_hrs > 0:
                 if pd_eff > p_hrs + 0.9:
-                    new_status = "Paid Extra"
+                    base_status = "Paid Extra"
                 elif b_hrs < p_hrs - 0.9 and pd_eff >= b_hrs - 0.9:
-                    new_status = "Billed Short"
+                    base_status = "Billed Short"
                 elif pd_eff < b_hrs - 0.9:
                     remain = round(b_hrs - pd_eff, 1)
-                    new_status = f"Short Paid ({remain} hrs remain)"
+                    base_status = f"Short Paid ({remain} hrs remain)"
                 elif pd_eff < p_hrs - 0.9:
-                    new_status = "Short Paid"
+                    base_status = "Short Paid"
                 else:
-                    new_status = "Paid in Full"
+                    base_status = "Paid in Full"
             else:
                 if pd_eff > b_hrs + 0.9:
-                    new_status = "Paid Extra"
+                    base_status = "Paid Extra"
                 elif pd_eff < b_hrs - 0.9:
-                    new_status = "Short Paid"
+                    base_status = "Short Paid"
                 else:
-                    new_status = "Paid in Full"
-            consolidated_df.at[idx, "reconciled_status"] = new_status
+                    base_status = "Paid in Full"
+
+            consolidated_df.at[idx, "reconciled_status"] = base_status + " (adjusted)"
+
+            # Determine the neighbor week that provided / absorbed hours
+            if _adj[i] > 0:   # this week was short, received hours from neighbor
+                direction = "received"
+                neighbor_i = i + 1 if i + 1 < len(consolidated_df) else i - 1
+            else:             # this week had excess, donated hours to neighbor
+                direction = "donated"
+                neighbor_i = i - 1 if i > 0 else i + 1
+
+            neighbor_i = max(0, min(neighbor_i, len(consolidated_df) - 1))
+            neighbor_week = consolidated_df.iloc[neighbor_i]["first_dos"]
+            neighbor_pay_date = consolidated_df.iloc[neighbor_i]["payment_date"]
+
+            hrs_netted = round(abs(_adj[i]), 1)
+
+            # Build per-week drill-down note
+            if direction == "received":
+                _netting_by_week[this_week] = (
+                    f"🔀 **{hrs_netted} hrs** of shortage absorbed from adjacent week "
+                    f"(**{neighbor_week}**) which had {hrs_netted} hrs excess payment "
+                    + (f"(paid {neighbor_pay_date})" if neighbor_pay_date else "") + "."
+                )
+            else:
+                _netting_by_week[this_week] = (
+                    f"🔀 **{hrs_netted} hrs** excess donated to adjacent week "
+                    f"(**{neighbor_week}**) which was short by {hrs_netted} hrs."
+                )
+
+            # Log entry for expander table
+            pay_date_str = consolidated_df.at[idx, "payment_date"]
+            _netting_log.append({
+                "Week":         str(this_week),
+                "Hrs Netted":   hrs_netted,
+                "Direction":    "⬆️ Received" if direction == "received" else "⬇️ Donated",
+                "Net From/To":  str(neighbor_week),
+                "Payment Date": str(pay_date_str) if pay_date_str else "—",
+                "Result":       base_status,
+            })
 
         # Restore descending display order
         consolidated_df = consolidated_df.sort_values("first_dos", ascending=False)
@@ -596,8 +620,6 @@ if not ledger_df.empty:
         "⏳ Show unpaid/pending only (weeks where adjusted pending hrs > 0)",
         value=False, key="ledger_show_unpaid",
     )
-    # Filter uses the adjusted week_pending_hrs so netted weeks are correctly
-    # excluded from the pending-only view.
     if show_unpaid_only and not consolidated_df.empty:
         consolidated_df = consolidated_df[
             consolidated_df["week_pending_hrs"].fillna(0.0).astype(float) > 0.9
@@ -606,6 +628,34 @@ if not ledger_df.empty:
 if ledger_df.empty or consolidated_df.empty:
     st.info("No remittance records found for this client.", icon="ℹ️")
 else:
+    # ── Netting transparency expander (only shown when netting occurred) ───
+    if _netting_log:
+        with st.expander(
+            f"🔀 Adjacent-week netting applied to {len(_netting_log)} week(s) — click to see details",
+            expanded=False,
+        ):
+            st.markdown(
+                "💡 **What is adjacent-week netting?**  "
+                "When an aide works a night shift crossing midnight at the Tue→Wed week boundary, "
+                "payroll credits the hours to one week while insurance remittance credits the adjacent week. "
+                "This creates an alternating Short Paid / Paid Extra pattern that nets to zero economically. "
+                "The ledger automatically adjusts these weeks so the Status and Pending Hrs reflect reality. "
+                "Raw remittance data is never modified."
+            )
+            st.dataframe(
+                pd.DataFrame(_netting_log),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Week":         st.column_config.TextColumn("Week (First DOS)"),
+                    "Hrs Netted":   st.column_config.NumberColumn("Hrs Netted", format="%.1f"),
+                    "Direction":    st.column_config.TextColumn("Direction"),
+                    "Net From/To":  st.column_config.TextColumn("Adjacent Week"),
+                    "Payment Date": st.column_config.TextColumn("Payment Date"),
+                    "Result":       st.column_config.TextColumn("Adjusted Status"),
+                },
+            )
+
     st.markdown(
         "<div style='font-size:0.82rem;color:#8892a4;margin-bottom:8px;'>"
         "💡 Select any row in the table below to inspect daily claims and check/TCN numbers."
@@ -655,13 +705,24 @@ else:
             (daily_claims_df["first_dos_date"] <= selected_week_end)
         ].copy()
 
+        # Build drill-down header with optional per-week netting note
+        _drill_netting_note = ""
+        if selected_week_start in _netting_by_week:
+            _drill_netting_note = (
+                f"<br><span style='color:#a78bfa;font-size:0.8rem;'>"
+                + _netting_by_week[selected_week_start].replace("**", "<b>", 1).replace("**", "</b>", 1)
+                  .replace("**", "<b>", 1).replace("**", "</b>", 1)
+                  .replace("**", "<b>", 1).replace("**", "</b>", 1)
+                + "</span>"
+            )
+
         st.markdown(
             "<div style='margin-top:1.5rem;margin-bottom:0.5rem;'>"
             "<h4 style='margin:0;font-size:1.1rem;font-weight:600;color:#e8eaf0;'>🔍 Daily Claims Detail</h4>"
             "<div style='font-size:0.78rem;color:#8892a4;margin-top:2px;'>"
             f"Showing individual daily remittance records for week <b>{selected_week_start}</b> to <b>{selected_week_end}</b>"
-            "<br><span style='color:#4f8ef7;'>Note: daily rows reflect raw remittance data — adjacent-week netting applies at the weekly summary level only.</span>"
-            "</div></div>",
+            + _drill_netting_note
+            + "</div></div>",
             unsafe_allow_html=True,
         )
 
