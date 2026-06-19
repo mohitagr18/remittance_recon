@@ -273,6 +273,10 @@ def create_all(conn: duckdb.DuckDBPyConnection) -> None:
 
     # ── Column migrations for older schema versions ────────────────────────────
     conn.execute("ALTER TABLE skilled_tracker_clients ADD COLUMN IF NOT EXISTS deactivated_from DATE DEFAULT NULL")
+    # Restore copay_clients columns that may be missing on databases created before
+    # the effective_to / effective_from columns were added to the DDL.
+    conn.execute("ALTER TABLE copay_clients ADD COLUMN IF NOT EXISTS effective_from DATE")
+    conn.execute("ALTER TABLE copay_clients ADD COLUMN IF NOT EXISTS effective_to   DATE")
 
     # ── Seed default system config values if not already present ──────────────
     conn.execute("""
