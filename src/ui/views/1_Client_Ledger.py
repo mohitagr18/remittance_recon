@@ -171,16 +171,36 @@ if not summary_df.empty:
     rate        = float(row.get("collection_rate_pct", 0) or 0)
     ytd_pending = float(row.get("ytd_pending_hrs", 0) or 0)
     rate_color  = "#22c55e" if rate >= 95 else "#f59e0b" if rate >= 85 else "#ef4444"
+    payroll_val = f"{ytd_payroll:,.1f}" if pd.notna(ytd_payroll) and ytd_payroll != 0 else "—"
 
-    _summary_cols = st.columns(8)
-    _summary_cols[0].metric("CLIENT", selected)
-    _summary_cols[1].metric("INSURANCE", ins)
-    _summary_cols[2].metric("TOTAL PAYROLL HRS", f"{ytd_payroll:,.1f}" if pd.notna(ytd_payroll) and ytd_payroll != 0 else "—")
-    _summary_cols[3].metric("TOTAL BILLED HRS", f"{ytd_billed:,.1f}")
-    _summary_cols[4].metric("TOTAL PAID HRS", f"{ytd_paid:,.1f}")
-    _summary_cols[5].metric("TOTAL PENDING HRS", f"{ytd_pending:,.1f}")
-    _summary_cols[6].metric("COLLECTION RATE", f"{rate:.1f}%")
-    _summary_cols[7].metric("WEEKS TRACKED", f"{total_weeks} ({fu_weeks} follow-up)") 
+    def _stat_card(label, value, value_color="#e8eaf0"):
+        return (
+            f"<div style='background:#1a1f2e;border:1px solid #2a3147;border-radius:10px;"
+            f"padding:14px 18px;flex:1;min-width:160px;'>"
+            f"<div style='font-size:0.7rem;color:#8892a4;font-weight:600;letter-spacing:0.05em;"
+            f"text-transform:uppercase;margin-bottom:6px;'>{label}</div>"
+            f"<div style='font-size:1.25rem;font-weight:700;color:{value_color};white-space:nowrap;'>{value}</div>"
+            f"</div>"
+        )
+
+    row1 = (
+        _stat_card("Client", selected)
+        + _stat_card("Insurance", ins)
+        + _stat_card("Total Payroll Hrs", payroll_val)
+        + _stat_card("Collection Rate", f"{rate:.1f}%", rate_color)
+    )
+    row2 = (
+        _stat_card("Total Billed Hrs", f"{ytd_billed:,.1f}")
+        + _stat_card("Total Paid Hrs", f"{ytd_paid:,.1f}")
+        + _stat_card("Total Pending Hrs", f"{ytd_pending:,.1f}", "#f59e0b" if ytd_pending > 0 else "#e8eaf0")
+        + _stat_card("Weeks Tracked", f"{total_weeks} ({fu_weeks} follow-up)")
+    )
+
+    st.markdown(
+        f"<div style='display:flex;gap:12px;margin-bottom:10px;flex-wrap:nowrap;'>{row1}</div>"
+        f"<div style='display:flex;gap:12px;margin-bottom:1.4rem;flex-wrap:nowrap;'>{row2}</div>",
+        unsafe_allow_html=True,
+    )
 
 _TILE_STYLE = {
     ("Good",      None):             ("✅",  "#22c55e", "#0d2318", "All Paid – No Action"),
@@ -206,7 +226,7 @@ def _month_tile(row) -> str:
         if excess else ""
     )
     return (
-        f'<div style="background:{bg};border:1px solid {color};border-radius:10px;' 
+        f'<div style="background:{bg};border:1px solid {color};border-radius:10px;'
         f'padding:12px 14px;min-width:175px;flex:0 0 auto;">'
         f'<div style="font-size:0.75rem;color:#8892a4;margin-bottom:4px;">{row["month_label"]}</div>'
         f'<div style="font-size:0.85rem;font-weight:700;color:{color};">{icon} {label}</div>'
