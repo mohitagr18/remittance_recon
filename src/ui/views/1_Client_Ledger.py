@@ -508,6 +508,70 @@ if not ledger_df.empty:
 
     consolidated_df = pd.DataFrame(consolidated)
     if not consolidated_df.empty:
+        consolidated_df = consolidated_df.sort_values("first_dos", ascending=True).reset_index(drop=True)
+
+        # ── Adjacent-week min-netting ──────────────────────────────────────
+        # Night shifts crossing midnight at a week boundary (Tue→Wed) cause
+        # payroll and remittance to attribute hours to different weeks,
+        # creating alternating Short Paid / Paid Excess patterns that net to
+        # zero across consecutive weeks.  Detect and auto-adjust.
+        payroll = consolidated_df["week_payroll_hours"].fillna(0.0).astype(float)
+        paid    = consolidated_df["paid_hours"].fillna(0.0).astype(float)
+        billed  = consolidated_df["billed_hours"].fillna(0.0).astype(float)
+        delta   = paid - payroll  # negative = short, positive = excess
+
+        adj = [0.0] * len(consolidated_df)  # adjustment per row
+
+        for i in range(len(consolidated_df) - 1):
+            d_cur  = delta.iloc[i]  + adj[i]      # effective delta after prior adj
+            d_next = delta.iloc[i+1] + adj[i+1]
+
+            if d_cur < -0.9 and d_next > 0.9:
+                # current week short, next week excess
+                net = min(abs(d_cur), d_next)
+                adj[i]   += net   # reduce shortage
+                adj[i+1] -= net   # consume excess
+            elif d_cur > 0.9 and d_next < -0.9:
+                # current week excess, next week short
+                net = min(d_cur, abs(d_next))
+                adj[i]   -= net   # consume excess
+                adj[i+1] += net   # reduce shortage
+
+        # Apply adjustments
+        for i in range(len(consolidated_df)):
+            if abs(adj[i]) < 0.01:
+                continue
+            idx = consolidated_df.index[i]
+            p_hrs = float(payroll.iloc[i])
+            pd_hrs = float(paid.iloc[i]) + adj[i]   # effective paid after netting
+            b_hrs = float(billed.iloc[i])
+            old_pending = float(consolidated_df.at[idx, "week_pending_hrs"])
+            new_pending = max(round(old_pending - adj[i], 2), 0.0)
+            consolidated_df.at[idx, "week_pending_hrs"] = new_pending
+
+            # Recompute status based on adjusted paid hours
+            if p_hrs > 0:
+                if pd_hrs > p_hrs + 0.9:
+                    new_status = "Paid Extra"
+                elif b_hrs < p_hrs - 0.9 and pd_hrs >= b_hrs - 0.9:
+                    new_status = "Billed Short"
+                elif pd_hrs < b_hrs - 0.9:
+                    remain = round(b_hrs - pd_hrs, 1)
+                    new_status = f"Short Paid ({remain} hrs remain)"
+                elif pd_hrs < p_hrs - 0.9:
+                    new_status = "Short Paid"
+                else:
+                    new_status = "Paid in Full"
+            else:
+                if pd_hrs > b_hrs + 0.9:
+                    new_status = "Paid Extra"
+                elif pd_hrs < b_hrs - 0.9:
+                    new_status = "Short Paid"
+                else:
+                    new_status = "Paid in Full"
+            consolidated_df.at[idx, "reconciled_status"] = new_status
+
+        # Restore descending sort for display
         consolidated_df = consolidated_df.sort_values("first_dos", ascending=False)
 
     # Apply copay month filter from deep-link
