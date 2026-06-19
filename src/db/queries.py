@@ -20,8 +20,11 @@ def copay_monthly_status(
     """
     Monthly copay reconciliation view.
 
-    For each copay client × month, sums pending dollars across all weeks
-    and compares to the client's monthly copay_amount.
+    For each copay client × month, sums billed and paid dollars DIRECTLY from
+    remittance (charge_amount / payment_amount) — NOT via hours × rate.
+    Using hours × rate was wrong because adjacent-week netting can double
+    reconciliation.billed_hours (e.g. 148 instead of 74), inflating the
+    computed billed dollars and making months appear underpaid.
 
     Returns columns:
         client_name, insurance, copay_amount, month_label,
@@ -32,9 +35,9 @@ def copay_monthly_status(
     """
     month_filter = ""
     if year:
-        month_filter += f" AND DATE_PART('year', r.week_start_date) = {year}"
+        month_filter += f" AND DATE_PART('year', rem.first_dos) = {year}"
     if month:
-        month_filter += f" AND DATE_PART('month', r.week_start_date) = {month}"
+        month_filter += f" AND DATE_PART('month', rem.first_dos) = {month}"
 
     sql = f"""
         WITH copay_clients_active AS (
@@ -43,31 +46,33 @@ def copay_monthly_status(
             WHERE is_active = TRUE AND copay_amount IS NOT NULL
         ),
         recon_monthly AS (
+            -- Sum charge_amount and payment_amount DIRECTLY from remittance.
+            -- Do NOT multiply reconciliation.billed_hours by a derived rate;
+            -- that hours column can be inflated 2x by adjacent-week netting.
             SELECT
-                regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', '') AS client_name_payroll,
+                regexp_replace(
+                    r.client_name_payroll,
+                    '(?i)\\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$',
+                    ''
+                ) AS client_name_payroll,
                 r.insurance,
-                DATE_PART('year', r.week_start_date)::INT  AS yr,
-                DATE_PART('month', r.week_start_date)::INT AS mo,
-                SUM(r.billed_hours  * COALESCE(rem.charge_amount  / NULLIF(rem.billed_hours, 0), 0)) AS total_billed_dollars,
-                SUM(r.paid_hours    * COALESCE(rem.payment_amount / NULLIF(rem.paid_hours,   0), 0)) AS total_paid_dollars
+                DATE_PART('year',  rem.first_dos)::INT  AS yr,
+                DATE_PART('month', rem.first_dos)::INT  AS mo,
+                ROUND(SUM(rem.charge_amount),  2) AS total_billed_dollars,
+                ROUND(SUM(rem.payment_amount), 2) AS total_paid_dollars
             FROM reconciliation r
-            LEFT JOIN (
-                SELECT
-                    client_name_combined,
-                    SUM(charge_amount)  AS charge_amount,
-                    SUM(payment_amount) AS payment_amount,
-                    MAX(billed_hours)   AS billed_hours,
-                    SUM(paid_hours)     AS paid_hours,
-                    first_dos
-                FROM remittance
-                WHERE is_latest = TRUE
-                GROUP BY client_name_combined, first_dos
-            ) rem
+            JOIN remittance rem
               ON UPPER(r.client_name_remittance) = UPPER(rem.client_name_combined)
              AND rem.first_dos BETWEEN r.week_start_date AND r.week_end_date
-            WHERE UPPER(regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', '')) IN (SELECT UPPER(client_name) FROM copay_clients_active)
+             AND rem.is_latest = TRUE
+            WHERE UPPER(regexp_replace(
+                    r.client_name_payroll,
+                    '(?i)\\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''
+                  )) IN (SELECT UPPER(client_name) FROM copay_clients_active)
             {month_filter}
-            GROUP BY regexp_replace(r.client_name_payroll, '(?i)\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''), r.insurance, yr, mo
+            GROUP BY
+                regexp_replace(r.client_name_payroll, '(?i)\\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''),
+                r.insurance, yr, mo
         ),
         monthly_pending AS (
             SELECT
