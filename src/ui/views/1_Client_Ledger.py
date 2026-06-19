@@ -193,7 +193,7 @@ _TILE_STYLE = {
 def _month_tile(row) -> str:
     key = (row["copay_status"], row.get("copay_note"))
     icon, color, bg, label = _TILE_STYLE.get(
-        key, ("\u2753", "#8892a4", "#1e2130", row["copay_status"])
+        key, ("❓", "#8892a4", "#1e2130", row["copay_status"])
     )
     pending = float(row.get("pending_dollars", 0) or 0)
     billed  = float(row.get("total_billed_dollars", 0) or 0)
@@ -240,13 +240,13 @@ try:
             _n_partial = int((_client_copay["copay_note"] == "Partial Copay").sum())
             _tiles_html = "".join(_month_tile(row) for _, row in _client_copay.iterrows())
             _insurance_badge = (
-                "<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;'"
+                "<span style='background:#1f1a0d;color:#f59e0b;border:1px solid #f59e0b;"
                 f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_exceeds} \u26a0\ufe0f Insurance Underpaid</span>"
                 if _n_exceeds > 0 else ""
             )
             _review_badge = (
-                "<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;'"
-                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} \ud83d\udd36 Partial Copay Months</span>"
+                "<span style='background:#1f1208;color:#f97316;border:1px solid #f97316;"
+                f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>{_n_partial} \U0001f536 Partial Copay Months</span>"
                 if _n_partial > 0 else ""
             )
             st.markdown(
@@ -254,7 +254,7 @@ try:
                 "<div style='display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;'>"
                 "<span style='font-size:1rem;font-weight:700;color:#a78bfa;'>📋 Copay Client</span>"
                 f"<span style='font-size:0.82rem;color:#8892a4;'>${_copay_amount:,.2f}/month</span>"
-                "<span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;'"
+                "<span style='background:#0d2318;color:#22c55e;border:1px solid #22c55e;"
                 f"border-radius:5px;padding:2px 8px;font-size:0.75rem;'>\u2705 {_n_full} All Paid</span>"
                 + _insurance_badge
                 + _review_badge
@@ -604,7 +604,7 @@ else:
         ):
             st.markdown("**❓ What is adjacent-week netting?**")
             st.markdown(
-                "When an aide works a night shift that crosses midnight at the Tue→Wed week boundary, "
+                "When an aide works a night shift that crosses midnight at the Tue\u2192Wed week boundary, "
                 "payroll credits the hours to one week while insurance remittance credits the adjacent week. "
                 "This creates a misleading alternating Short Paid / Paid Extra pattern that nets to zero economically. "
                 "The ledger automatically offsets these weeks so Status and Pending Hrs reflect reality. "
