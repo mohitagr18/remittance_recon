@@ -56,8 +56,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Trackers**")
     st.page_link(tracker_page)
-    
-        st.page_link(copay_manager_page)
+    st.page_link(copay_manager_page)
     st.page_link(unskilled_tracker_page)
 # 2. Run page (this will execute the page script, rendering its content & sidebar filters)
 pg.run()
