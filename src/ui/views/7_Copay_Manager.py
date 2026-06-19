@@ -57,10 +57,9 @@ STATUS_CONFIG = {
     "Insurer Overpaid":       {"icon": "🔵", "color": "#60a5fa", "bg": "#0d1a2e"},
 }
 
-# Only underpaid rows go in the follow-up / metric
-_FOLLOW_UP_STATUSES  = {"Insurance Underpaid"}
-_OVERPAID_STATUS     = "Insurer Overpaid"
-_OK_STATUS           = "Insurance OK"
+_FOLLOW_UP_STATUSES = {"Insurance Underpaid"}
+_OVERPAID_STATUS    = "Insurer Overpaid"
+_OK_STATUS          = "Insurance OK"
 
 
 def _ins_expected(billed: float, copay: float) -> float:
@@ -68,7 +67,6 @@ def _ins_expected(billed: float, copay: float) -> float:
 
 
 def _shortfall(ins_expected: float, ins_paid: float) -> float:
-    """Positive = insurer underpaid. Negative = insurer overpaid."""
     return round(ins_expected - ins_paid, 2)
 
 
@@ -118,35 +116,34 @@ def _build_display_df(df: pd.DataFrame) -> pd.DataFrame:
         cfg_s    = STATUS_CONFIG.get(status, {})
         rows.append({
             "Client":        r["client_name"],
-            "Insurance":     r.get("insurance", "—") or "—",
+            "Payer":         r.get("insurance", "—") or "—",
             "Month":         r["month_label"],
             "yr":            int(r["yr"]),
             "mo":            int(r["mo"]),
             "Status":        f"{cfg_s.get('icon', '')} {status}",
-            "Action":        _action_text(status, sf),
-            "Shortfall":     sf,
             "Billed":        billed,
             "Ins. Expected": expected,
             "Ins. Paid":     ins_paid,
             "Copay":         copay,
+            "Shortfall":     sf,
+            "Action":        _action_text(status, sf),
             "_status_key":   status,
         })
     out = pd.DataFrame(rows)
     if not out.empty:
         out = out.sort_values(
-            ["Shortfall", "Insurance", "Client", "Month"],
+            ["Shortfall", "Payer", "Client", "Month"],
             ascending=[False, True, True, True],
         )
     return out
 
 
 def _build_payer_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Payer summary for follow-up rows only (positive shortfall)."""
     if df.empty:
         return pd.DataFrame(columns=["Payer", "Clients Affected", "Open Months",
                                      "Total Shortfall", "Oldest Open Month"])
     tmp = _build_display_df(df)
-    grp = tmp.groupby("Insurance", dropna=False).agg(
+    grp = tmp.groupby("Payer", dropna=False).agg(
         clients_affected=("Client", "nunique"),
         open_months=("Month", "count"),
         total_shortfall=("Shortfall", "sum"),
@@ -156,11 +153,10 @@ def _build_payer_summary(df: pd.DataFrame) -> pd.DataFrame:
     oldest["_sort"] = oldest["yr"] * 100 + oldest["mo"]
     oldest = oldest.sort_values("_sort").groupby("insurance", dropna=False).first().reset_index()
     oldest = oldest[["insurance", "month_label"]].rename(
-        columns={"insurance": "Insurance", "month_label": "Oldest Open Month"}
+        columns={"insurance": "Payer", "month_label": "Oldest Open Month"}
     )
-    grp = grp.merge(oldest, on="Insurance", how="left")
+    grp = grp.merge(oldest, on="Payer", how="left")
     grp = grp.rename(columns={
-        "Insurance": "Payer",
         "clients_affected": "Clients Affected",
         "open_months": "Open Months",
         "total_shortfall": "Total Shortfall",
@@ -168,12 +164,12 @@ def _build_payer_summary(df: pd.DataFrame) -> pd.DataFrame:
     return grp
 
 
-_DETAIL_COL_CONFIG = {
+# Shared column config: text cols tight, number cols auto-sized, Action trailing medium
+_COL_CFG = {
     "Client":        st.column_config.TextColumn("Client",         width="medium"),
-    "Insurance":     st.column_config.TextColumn("Payer",          width="medium"),
+    "Payer":         st.column_config.TextColumn("Payer",          width="small"),
     "Month":         st.column_config.TextColumn("Month",          width="small"),
-    "Status":        st.column_config.TextColumn("Status",         width="medium"),
-    "Action":        st.column_config.TextColumn("Action — what to do", width="large"),
+    "Status":        st.column_config.TextColumn("Status",         width="small"),
     "Billed":        st.column_config.NumberColumn("Billed",        format="$%.2f"),
     "Ins. Expected": st.column_config.NumberColumn("Ins. Expected", format="$%.2f",
                          help="Billed − Copay: what insurer should pay"),
@@ -181,9 +177,14 @@ _DETAIL_COL_CONFIG = {
     "Copay":         st.column_config.NumberColumn("Copay",         format="$%.2f"),
     "Shortfall":     st.column_config.NumberColumn("Shortfall",     format="$%.2f",
                          help="Ins. Expected − Ins. Paid. Positive = insurer owes more."),
+    "Action":        st.column_config.TextColumn("Notes",           width="medium"),
 }
-_DISPLAY_COLS = ["Client", "Insurance", "Month", "Status", "Action",
-                 "Billed", "Ins. Expected", "Ins. Paid", "Copay", "Shortfall"]
+
+# Column order: identity | numbers | action
+_DETAIL_COLS    = ["Client", "Payer", "Month", "Status",
+                   "Billed", "Ins. Expected", "Ins. Paid", "Copay", "Shortfall", "Action"]
+_OK_COLS        = ["Client", "Payer", "Month",
+                   "Billed", "Ins. Expected", "Ins. Paid", "Copay", "Shortfall"]
 
 
 st.markdown(
@@ -232,11 +233,10 @@ with tab1:
 
         df = df_all.copy() if show_all else df_all[df_all["month_label"] == sel_month].copy()
 
-        followup_df  = df[df["status"].isin(_FOLLOW_UP_STATUSES)].copy()
-        overpaid_df  = df[df["status"] == _OVERPAID_STATUS].copy()
-        ok_df        = df[df["status"] == _OK_STATUS].copy()
+        followup_df = df[df["status"].isin(_FOLLOW_UP_STATUSES)].copy()
+        overpaid_df = df[df["status"] == _OVERPAID_STATUS].copy()
+        ok_df       = df[df["status"] == _OK_STATUS].copy()
 
-        # Total shortfall: only positive shortfalls (underpaid rows)
         total_shortfall  = float(
             sum(_shortfall(_ins_expected(r["total_billed_dollars"], r["copay_amount"]),
                            r["total_paid_dollars"])
@@ -267,7 +267,7 @@ with tab1:
                     "Clients Affected":  st.column_config.NumberColumn("Clients Affected"),
                     "Open Months":       st.column_config.NumberColumn("Open Months"),
                     "Total Shortfall":   st.column_config.NumberColumn("Total Shortfall",  format="$%.2f"),
-                    "Oldest Open Month": st.column_config.TextColumn("Oldest Open Month"),
+                    "Oldest Open Month": st.column_config.TextColumn("Oldest Open Month", width="small"),
                 },
             )
 
@@ -276,12 +276,12 @@ with tab1:
 
             detail_df = _build_display_df(followup_df)
             sel = st.dataframe(
-                detail_df[_DISPLAY_COLS],
+                detail_df[_DETAIL_COLS],
                 use_container_width=True,
                 hide_index=True,
                 on_select="rerun",
                 selection_mode="single-row",
-                column_config=_DETAIL_COL_CONFIG,
+                column_config=_COL_CFG,
                 key="copay_followup_table",
             )
 
@@ -309,16 +309,16 @@ with tab1:
         else:
             st.success("✅ No insurance shortfalls for this period.")
 
-        # --- Overpayments: FYI only, collapsed ---
+        # --- Overpayments: FYI, collapsed ---
         if not overpaid_df.empty:
             with st.expander(f"🔵 Insurer Overpayments — FYI ({len(overpaid_df)})", expanded=False):
                 st.caption("Insurer paid more than expected. No action required, but worth verifying the remittance.")
                 op_display = _build_display_df(overpaid_df)
                 st.dataframe(
-                    op_display[_DISPLAY_COLS],
+                    op_display[_DETAIL_COLS],
                     use_container_width=True,
                     hide_index=True,
-                    column_config=_DETAIL_COL_CONFIG,
+                    column_config=_COL_CFG,
                 )
 
         # --- Insurance OK: collapsed ---
@@ -326,17 +326,17 @@ with tab1:
             with st.expander(f"✅ Insurance OK — {len(ok_df)} month(s)", expanded=False):
                 ok_display = _build_display_df(ok_df)
                 st.dataframe(
-                    ok_display[["Client", "Insurance", "Month", "Billed", "Ins. Expected", "Ins. Paid", "Copay", "Shortfall"]],
+                    ok_display[_OK_COLS],
                     use_container_width=True,
                     hide_index=True,
-                    column_config=_DETAIL_COL_CONFIG,
+                    column_config=_COL_CFG,
                 )
 
         with st.expander("ℹ️ How to read this page", expanded=False):
             st.markdown("- **Ins. Expected** = Billed − Copay: the share the insurer is responsible for.")
             st.markdown("- **Shortfall** = Ins. Expected − Ins. Paid. Positive = insurer underpaid (follow up).")
             st.markdown("- **Copay** is assumed always paid in full by the client.")
-            st.markdown("- **Insurer Overpayments**: insurer paid *more* than expected. Excluded from shortfall total — FYI only.")
+            st.markdown("- **Insurer Overpayments**: excluded from shortfall total — FYI only.")
             st.markdown("- **Insurance OK**: within tolerance. No action needed.")
 
 
