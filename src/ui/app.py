@@ -22,6 +22,7 @@ ai_chat_page          = st.Page("views/4_AI_Chat.py",              title="AI Cha
 
 tracker_page          = st.Page("views/6_EVV_Tracker.py",          title="EVV Tracker",            icon="📊")
 copay_manager_page    = st.Page("views/7_Copay_Manager.py",        title="Copay Manager",          icon="📋")
+unskilled_tracker_page = st.Page("views/8_Unskilled_Remittance_Tracker.py", title="Unskilled Remittance Tracker", icon="📝")
 
 name_match_page       = st.Page("views/3_Name_Match_Manager.py",   title="Name Match Manager",     icon="⚙️")
 data_management_page  = st.Page("views/5_Data_Management.py",      title="Import Data",            icon="📥")
@@ -29,7 +30,7 @@ data_management_page  = st.Page("views/5_Data_Management.py",      title="Import
 # Create navigation structure (hide default sidebar rendering)
 pg = st.navigation({
     "Main":     [dashboard_page, weekly_recon_page, client_ledger_page, analyst_workbench_page, ai_chat_page],
-    "Trackers": [tracker_page, copay_manager_page],
+        "Trackers": [tracker_page, copay_manager_page, unskilled_tracker_page],
     "Admin":    [name_match_page, data_management_page]
 }, position="hidden")
 
