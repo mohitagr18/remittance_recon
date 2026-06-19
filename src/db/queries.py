@@ -20,11 +20,10 @@ def copay_monthly_status(
     """
     Monthly copay reconciliation view.
 
-    For each copay client × month, sums billed and paid dollars DIRECTLY from
-    remittance (charge_amount / payment_amount) — NOT via hours × rate.
-    Using hours × rate was wrong because adjacent-week netting can double
-    reconciliation.billed_hours (e.g. 148 instead of 74), inflating the
-    computed billed dollars and making months appear underpaid.
+    Queries remittance DIRECTLY by client name — does NOT join through
+    reconciliation. Joining through reconciliation caused double-counting
+    because adjacent-week netting creates two overlapping reconciliation rows
+    for the same DOS range, so the same remittance dollars were summed twice.
 
     Returns columns:
         client_name, insurance, copay_amount, month_label,
@@ -45,38 +44,47 @@ def copay_monthly_status(
             FROM copay_clients
             WHERE is_active = TRUE AND copay_amount IS NOT NULL
         ),
-        recon_monthly AS (
-            -- Sum charge_amount and payment_amount DIRECTLY from remittance.
-            -- Do NOT multiply reconciliation.billed_hours by a derived rate;
-            -- that hours column can be inflated 2x by adjacent-week netting.
+        -- Resolve payroll name -> remittance name(s) via the name_match table
+        -- and the reconciliation client_name_remittance column.
+        -- We need every known remittance alias for each copay client.
+        copay_remittance_names AS (
             SELECT
-                regexp_replace(
-                    r.client_name_payroll,
-                    '(?i)\\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$',
-                    ''
-                ) AS client_name_payroll,
-                r.insurance,
+                cc.client_name,
+                cc.insurance,
+                cc.copay_amount,
+                UPPER(COALESCE(nm.remittance_name, r.client_name_remittance, cc.client_name)) AS rem_name
+            FROM copay_clients_active cc
+            LEFT JOIN name_match nm
+                ON UPPER(nm.payroll_name) = UPPER(cc.client_name)
+            LEFT JOIN (
+                SELECT DISTINCT
+                    regexp_replace(client_name_payroll, '(?i)\\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', '') AS stripped,
+                    client_name_remittance
+                FROM reconciliation
+                WHERE client_name_remittance IS NOT NULL
+            ) r ON UPPER(r.stripped) = UPPER(cc.client_name)
+        ),
+        recon_monthly AS (
+            -- Sum directly from remittance grouped by month.
+            -- No reconciliation join → no double-counting risk.
+            SELECT
+                crn.client_name,
+                crn.insurance,
                 DATE_PART('year',  rem.first_dos)::INT  AS yr,
                 DATE_PART('month', rem.first_dos)::INT  AS mo,
                 ROUND(SUM(rem.charge_amount),  2) AS total_billed_dollars,
                 ROUND(SUM(rem.payment_amount), 2) AS total_paid_dollars
-            FROM reconciliation r
+            FROM copay_remittance_names crn
             JOIN remittance rem
-              ON UPPER(r.client_name_remittance) = UPPER(rem.client_name_combined)
-             AND rem.first_dos BETWEEN r.week_start_date AND r.week_end_date
-             AND rem.is_latest = TRUE
-            WHERE UPPER(regexp_replace(
-                    r.client_name_payroll,
-                    '(?i)\\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''
-                  )) IN (SELECT UPPER(client_name) FROM copay_clients_active)
+                ON UPPER(rem.client_name_combined) = crn.rem_name
+               AND rem.is_latest = TRUE
+            WHERE 1=1
             {month_filter}
-            GROUP BY
-                regexp_replace(r.client_name_payroll, '(?i)\\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''),
-                r.insurance, yr, mo
+            GROUP BY crn.client_name, crn.insurance, yr, mo
         ),
         monthly_pending AS (
             SELECT
-                rm.client_name_payroll AS client_name,
+                rm.client_name,
                 rm.insurance,
                 cc.copay_amount,
                 cc.effective_from,
@@ -89,7 +97,7 @@ def copay_monthly_status(
                 ROUND(COALESCE(rm.total_billed_dollars, 0) - COALESCE(rm.total_paid_dollars, 0), 2) AS pending_dollars
             FROM recon_monthly rm
             JOIN copay_clients_active cc
-              ON UPPER(cc.client_name) = UPPER(rm.client_name_payroll)
+                ON UPPER(cc.client_name) = UPPER(rm.client_name)
         )
         SELECT
             client_name,
