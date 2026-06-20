@@ -240,8 +240,9 @@ def _month_tile(row) -> str:
 
 
 try:
-    from src.db.queries import copay_monthly_status, get_copay_table
-    _copay_clients_df = get_copay_table(conn)
+    # Use the already-reloaded `queries` module (same as Copay Manager does) so
+    # copay tile classification always matches the Copay Manager exactly.
+    _copay_clients_df = queries.get_copay_table(conn)
     _copay_names = (
         set(_copay_clients_df["client_name"].str.upper().tolist())
         if not _copay_clients_df.empty else set()
@@ -249,7 +250,7 @@ try:
     _is_copay_client = strip_suffix(selected).upper().strip() in _copay_names
 
     if _is_copay_client:
-        _copay_df     = copay_monthly_status(conn)
+        _copay_df     = queries.copay_monthly_status(conn)
         _client_copay = _copay_df[_copay_df["client_name"].str.upper().str.strip() == strip_suffix(selected).upper().strip()].copy()
 
         if not _client_copay.empty:
