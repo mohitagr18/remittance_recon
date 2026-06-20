@@ -20,17 +20,14 @@ def copay_monthly_status(
     """
     Monthly copay reconciliation view.
 
-    Computes billed/paid dollars as:
-        SUM(reconciliation.billed_hours) * hourly_rate
-        SUM(reconciliation.paid_hours)   * hourly_rate
+    Classification mirrors Copay Manager (7_Copay_Manager.py) exactly:
+        ins_expected = total_billed_dollars - copay_amount
+        shortfall    = ins_expected - total_paid_dollars
+        tol          = GREATEST(1.00, copay_amount * 0.05)
 
-    This is exactly how the Client Ledger derives pending — using
-    week_billed_hours and week_paid_hours from reconciliation — so the
-    Copay Manager and Client Ledger will always agree.
-
-    The per-client hourly_rate is a single scalar derived from remittance
-    (charge_amount / billed_hours) and is only used to convert hours to dollars
-    for the shortfall display. No remittance rows are summed for the pending calc.
+        shortfall >  tol  → 'Follow up' / 'Exceeds Copay'   (insurer underpaid)
+        shortfall < -tol  → 'Good'       / NULL              (insurer overpaid — FYI)
+        |shortfall| <= tol → 'Good'      / NULL              (insurance OK)
 
     Returns columns:
         client_name, insurance, copay_amount, month_label,
@@ -113,6 +110,17 @@ def copay_monthly_status(
                 ON UPPER(cc.client_name) = rm.client_upper
             LEFT JOIN client_rate cr
                 ON cr.client_upper = rm.client_upper
+        ),
+        classified AS (
+            SELECT
+                *,
+                -- ins_expected = what insurer should pay (Billed - Copay)
+                ROUND(total_billed_dollars - copay_amount, 2) AS ins_expected,
+                -- shortfall = ins_expected - ins_paid  (positive = insurer underpaid)
+                ROUND((total_billed_dollars - copay_amount) - total_paid_dollars, 2) AS ins_shortfall,
+                -- tolerance mirrors Copay Manager: max($1, 5% of copay)
+                GREATEST(1.00, copay_amount * 0.05) AS tol
+            FROM monthly_pending
         )
         SELECT
             client_name,
@@ -125,28 +133,14 @@ def copay_monthly_status(
             total_paid_dollars,
             pending_dollars,
             CASE
-                WHEN ABS(pending_dollars) <= 1.00
-                    THEN 'Good'
-                WHEN ABS(pending_dollars - copay_amount) <= 1.00
-                    THEN 'Good'
-                WHEN pending_dollars > copay_amount + 1.00
-                    THEN 'Follow up'
-                WHEN pending_dollars > 1.00 AND pending_dollars < copay_amount - 1.00
-                    THEN 'Follow up'
+                WHEN ins_shortfall > tol  THEN 'Follow up'
                 ELSE 'Good'
             END AS copay_status,
             CASE
-                WHEN ABS(pending_dollars) <= 1.00
-                    THEN NULL
-                WHEN ABS(pending_dollars - copay_amount) <= 1.00
-                    THEN 'Copay'
-                WHEN pending_dollars > copay_amount + 1.00
-                    THEN 'Exceeds Copay'
-                WHEN pending_dollars > 1.00 AND pending_dollars < copay_amount - 1.00
-                    THEN 'Partial Copay'
+                WHEN ins_shortfall > tol  THEN 'Exceeds Copay'
                 ELSE NULL
             END AS copay_note
-        FROM monthly_pending
+        FROM classified
         ORDER BY client_name, yr, mo
     """
     return conn.execute(sql).df()
