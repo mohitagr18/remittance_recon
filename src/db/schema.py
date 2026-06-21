@@ -133,6 +133,13 @@ CREATE TABLE IF NOT EXISTS ingested_files (
 
 -- ── Analyst Workflow ──────────────────────────────────────────────────────────
 
+CREATE TABLE IF NOT EXISTS analysts (
+    id          INTEGER PRIMARY KEY,
+    name        VARCHAR NOT NULL UNIQUE,
+    is_active   BOOLEAN DEFAULT TRUE,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS rebill_tracker (
     id                  INTEGER PRIMARY KEY,
     reconciliation_id   INTEGER REFERENCES reconciliation(id),
@@ -200,6 +207,7 @@ CREATE SEQUENCE IF NOT EXISTS seq_skilled_tracker_clients START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_skilled_tracker_comments START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_tracker_validation_runs START 1;
 
+CREATE SEQUENCE IF NOT EXISTS seq_analysts        START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_rebill_tracker  START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_review_actions  START 1;
 CREATE SEQUENCE IF NOT EXISTS seq_ingested_files  START 1;
@@ -236,6 +244,13 @@ CREATE TABLE IF NOT EXISTS unskilled_remit_tracker (
     escalation_reason   VARCHAR,                -- 'VOLUME' | 'AGE' | 'VOLUME,AGE'
     -- Audit
     entry_date          DATE NOT NULL,          -- system-stamped on creation, never editable
+    notes               VARCHAR,
+    follow_up_date      DATE,
+    resolved            BOOLEAN DEFAULT FALSE,
+    override            BOOLEAN DEFAULT FALSE,
+    override_reason     VARCHAR,
+    overridden_by       VARCHAR,
+    override_date       DATE,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (client_name, payer, first_dos, last_dos)
@@ -278,6 +293,15 @@ def create_all(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("ALTER TABLE copay_clients ADD COLUMN IF NOT EXISTS effective_from DATE")
     conn.execute("ALTER TABLE copay_clients ADD COLUMN IF NOT EXISTS effective_to   DATE")
 
+    # Migrations for Unskilled Tracker new workflow and override columns
+    conn.execute("ALTER TABLE unskilled_remit_tracker ADD COLUMN IF NOT EXISTS notes VARCHAR")
+    conn.execute("ALTER TABLE unskilled_remit_tracker ADD COLUMN IF NOT EXISTS follow_up_date DATE")
+    conn.execute("ALTER TABLE unskilled_remit_tracker ADD COLUMN IF NOT EXISTS resolved BOOLEAN DEFAULT FALSE")
+    conn.execute("ALTER TABLE unskilled_remit_tracker ADD COLUMN IF NOT EXISTS override BOOLEAN DEFAULT FALSE")
+    conn.execute("ALTER TABLE unskilled_remit_tracker ADD COLUMN IF NOT EXISTS override_reason VARCHAR")
+    conn.execute("ALTER TABLE unskilled_remit_tracker ADD COLUMN IF NOT EXISTS overridden_by VARCHAR")
+    conn.execute("ALTER TABLE unskilled_remit_tracker ADD COLUMN IF NOT EXISTS override_date DATE")
+
     # ── Seed default system config values if not already present ──────────────
     conn.execute("""
         INSERT INTO system_config (key, value, description) VALUES
@@ -286,5 +310,26 @@ def create_all(conn: duckdb.DuckDBPyConnection) -> None:
             ('ESCALATION_AGE_MONTHS',   '10', 'Months from entry_date before an item is age-escalated')
         ON CONFLICT (key) DO NOTHING
     """)
+
+    # ── Seed default analysts if table is empty ───────────────────────────────
+    if conn.execute("SELECT COUNT(*) FROM analysts").fetchone()[0] == 0:
+        default_analysts = [
+            "Mohit Aggarwal",
+            "Marquise Lane",
+            "Yash Nath",
+            "Divy Chaurasia",
+            "Ms. Connie",
+            "Pragya Chaurasia"
+        ]
+        for name in default_analysts:
+            conn.execute("INSERT INTO analysts (id, name) VALUES (nextval('seq_analysts'), ?)", [name])
+
+    # ── Migrate old abbreviated names to full names ───────────────────────
+    conn.execute("UPDATE analysts SET name = 'Mohit Aggarwal' WHERE name = 'MA'")
+    conn.execute("UPDATE analysts SET name = 'Marquise Lane' WHERE name = 'MNL'")
+    conn.execute("UPDATE analysts SET name = 'Yash Nath' WHERE name = 'YN'")
+    conn.execute("UPDATE analysts SET name = 'Ms. Connie' WHERE name = 'Connie'")
+    conn.execute("UPDATE analysts SET name = 'Pragya Chaurasia' WHERE name = 'Pragya'")
+    conn.execute("INSERT INTO analysts (id, name) SELECT nextval('seq_analysts'), 'Divy Chaurasia' WHERE NOT EXISTS (SELECT 1 FROM analysts WHERE name = 'Divy Chaurasia')")
 
     conn.commit()

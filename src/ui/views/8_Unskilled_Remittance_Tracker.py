@@ -1,6 +1,7 @@
 """
 src/ui/views/8_Unskilled_Remittance_Tracker.py
 Unskilled Remittance Tracker — Analyst view + Executive dashboard.
+(Forced reload 2)
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from src.db.unskilled_tracker_queries import (
     save_rebill_attempt,
     sync_payments_from_remittance,
     sync_pending_from_reconciliation,
+    resolve_copay_clients,
 )
 
 st.set_page_config(
@@ -64,6 +66,7 @@ def _run_sync() -> None:
     sync_pending_from_reconciliation(conn)
     sync_payments_from_remittance(conn)
     refresh_escalation_flags(conn)
+    resolve_copay_clients(conn)
 
 
 _run_sync()
@@ -175,164 +178,314 @@ if role == "Executive":
 # ── ANALYST VIEW ──────────────────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Active Analyst Dropdown
+analysts_df = conn.execute("SELECT name FROM analysts WHERE is_active = TRUE").df()
+analyst_list = analysts_df["name"].tolist() if not analysts_df.empty else ["Unknown Analyst"]
+
+col_a1, col_a2 = st.columns([1, 4])
+with col_a1:
+    current_analyst = st.session_state.get("active_analyst", analyst_list[0] if analyst_list else "Unknown")
+    # Make sure current_analyst is in the list, otherwise append it so selectbox doesn't crash
+    if current_analyst not in analyst_list:
+        analyst_list.insert(0, current_analyst)
+        
+    selected_analyst = st.selectbox("👤 Analyst Login", analyst_list, index=analyst_list.index(current_analyst), key="analyst_login")
+    st.session_state["active_analyst"] = selected_analyst
+
+
+# 2. Get combined pending & resolved data
 pending_df = get_pending_df(conn)
-escalated_df = pending_df[pending_df["is_escalated"] == True]
+resolved_df = get_resolved_df(conn)
+combined_df = pd.concat([pending_df, resolved_df]).drop_duplicates(subset=["id"])
 
-# ── Escalation banner ─────────────────────────────────────────────────────────
+# Filter out records older than 1 year and 1 week
+if not combined_df.empty:
+    cutoff_date = pd.Timestamp.now().normalize() - pd.DateOffset(years=1, weeks=1)
+    combined_df = combined_df[pd.to_datetime(combined_df["first_dos"]) >= cutoff_date]
+
+# 3. Escalation Banner (reads from combined_df to find active escalated ones)
+if not combined_df.empty:
+    escalated_df = combined_df[(combined_df["is_escalated"] == True) & (combined_df["override"] == False) & (combined_df["status"] != "RESOLVED") & (combined_df["resolved"] == False)]
+else:
+    escalated_df = pd.DataFrame()
+
 if not escalated_df.empty:
-    with st.expander(
-        f"🔴 ESCALATION ALERT — {len(escalated_df)} item(s) require immediate attention",
-        expanded=True,
-    ):
-        st.dataframe(
-            escalated_df[[
-                "client_name", "payer", "first_dos", "last_dos",
-                "pending_hours", "escalation_reason", "entry_date",
-            ]].rename(columns={
-                "client_name": "Client",
-                "payer": "Payer",
-                "first_dos": "First DOS",
-                "last_dos": "Last DOS",
-                "pending_hours": "Pending Hrs",
-                "escalation_reason": "Reason",
-                "entry_date": "Entry Date",
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
+    st.error(f"🔴 ESCALATION ALERT — {len(escalated_df)} item(s) require immediate attention (Volume >= 5 in 2mo window, or age >= 10mo)")
 
-# ── Filters ───────────────────────────────────────────────────────────────────
-with st.container():
-    f1, f2, f3, f4 = st.columns([2, 2, 2, 2])
-    search   = f1.text_input("🔍 Search client", placeholder="Type client name…")
-    payers   = ["All"] + sorted(pending_df["payer"].dropna().unique().tolist())
-    payer_f  = f2.selectbox("Payer", payers)
-    statuses = ["All", "PENDING", "PARTIAL", "ESCALATED"]
-    status_f = f3.selectbox("Status", statuses)
-    dos_range = f4.date_input("DOS range", value=[], help="Filter by First DOS")
+# 4. Filters & Controls
+col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns([1.5, 1.5, 1.5, 1.2, 2.3])
+with col_f1:
+    search = st.text_input("🔍 Search client", placeholder="Type client name…", key="unskilled_search")
+with col_f2:
+    payers = ["All"] + sorted(combined_df["payer"].dropna().unique().tolist()) if not combined_df.empty else ["All"]
+    payer_f = st.selectbox("Payer", payers, key="unskilled_payer")
+with col_f3:
+    statuses = ["PENDING", "ESCALATED", "PARTIAL", "All", "RESOLVED", "OVERRIDDEN"]
+    status_f = st.selectbox("Status Filter", statuses, key="unskilled_status")
+with col_f4:
+    months = ["All"]
+    if not combined_df.empty:
+        month_series = pd.to_datetime(combined_df["first_dos"]).dt.to_period('M').dropna().unique()
+        month_series_sorted = sorted(month_series, reverse=True)
+        months += [m.strftime('%B %Y') for m in month_series_sorted]
+    month_f = st.selectbox("Month", months, key="unskilled_month")
+with col_f5:
+    week_f = "All"
+    if month_f != "All":
+        m_df = combined_df[pd.to_datetime(combined_df["first_dos"]).dt.strftime('%B %Y') == month_f]
+        if not m_df.empty:
+            weeks_data = m_df[["first_dos", "last_dos"]].drop_duplicates().sort_values("first_dos", ascending=False)
+            week_options = ["All"]
+            for _, row in weeks_data.iterrows():
+                fd = pd.to_datetime(row["first_dos"]).strftime('%m/%d/%Y')
+                ld = pd.to_datetime(row["last_dos"]).strftime('%m/%d/%Y')
+                week_options.append(f"{fd} - {ld}")
+            week_f = st.selectbox("Week", week_options, key="unskilled_week")
+        else:
+            st.selectbox("Week", ["All"], disabled=True, key="unskilled_week_dis1")
+    else:
+        st.selectbox("Week", ["Select a month first"], disabled=True, key="unskilled_week_dis2")
+
+# Trigger pending override modal if exists - REMOVED
+
 
 # Apply filters
-df = pending_df.copy()
-if search:
-    df = df[df["client_name"].str.contains(search, case=False, na=False)]
-if payer_f != "All":
-    df = df[df["payer"] == payer_f]
-if status_f != "All":
-    df = df[df["status"] == status_f]
-if isinstance(dos_range, (list, tuple)) and len(dos_range) == 2:
-    df = df[(df["first_dos"] >= str(dos_range[0])) & (df["first_dos"] <= str(dos_range[1]))]
+df = combined_df.copy()
+if not df.empty:
+    if search:
+        df = df[df["client_name"].str.contains(search, case=False, na=False)]
+    if payer_f != "All":
+        df = df[df["payer"] == payer_f]
+    if status_f != "All":
+        if status_f == "OVERRIDDEN":
+            df = df[df["override"] == True]
+        else:
+            df = df[df["status"] == status_f]
+    if month_f != "All":
+        df = df[pd.to_datetime(df["first_dos"]).dt.strftime('%B %Y') == month_f]
+    if week_f not in ("All", "Select a month first"):
+        fd_str, ld_str = week_f.split(" - ")
+        start_dt = pd.to_datetime(fd_str)
+        end_dt = pd.to_datetime(ld_str)
+        df = df[(pd.to_datetime(df["first_dos"]) == start_dt) & (pd.to_datetime(df["last_dos"]) == end_dt)]
 
-st.caption(f"Showing {len(df)} of {len(pending_df)} pending items")
-
-# ── Main pending grid ─────────────────────────────────────────────────────────
-if df.empty:
-    st.info("No items match the current filters.")
-else:
-    for _, row in df.iterrows():
-        tracker_id = int(row["id"])
-        status_icon, bg = _BADGE.get(row["status"], ("⚪", "#eee"))
-        escalation_tag = " 🔴" if row["is_escalated"] else ""
-
-        label = (
-            f"{status_icon} "
-            f"**[{row['client_name']}](1_Client_Ledger)**"
-            f"{escalation_tag}  |  "
-            f"{row['payer']}  |  "
-            f"DOS: {row['first_dos']} – {row['last_dos']}  |  "
-            f"Pending: **{row['pending_hours']:.1f} hrs**  |  "
-            f"💬 {int(row['comment_count'])}"
-        )
-
-        with st.expander(label, expanded=False):
-            # ── Read-only fields (system-owned) ───────────────────────────────
-            col_l, col_r = st.columns(2)
-            with col_l:
-                st.markdown("**System Info** *(read-only)*")
-                st.write(f"- **Entry Date:** {row['entry_date']}")
-                st.write(f"- **Payer:** {row['payer']}")
-                st.write(f"- **Regular Hours (payroll):** {row['regular_hours']:.1f}")
-                st.write(f"- **Respite Hours (payroll):** {row['respite_hours']:.1f}")
-                st.write(f"- **Pending Hours:** {row['pending_hours']:.1f}")
-                st.write(f"- **Status:** {_badge(row['status'])}")
-                if row["is_escalated"]:
-                    st.warning(f"Escalated — {row['escalation_reason']}")
-
-            with col_r:
-                st.markdown(
-                    f"🔗 [Open Client Ledger](1_Client_Ledger) *(opens in new tab)*",
-                    unsafe_allow_html=False,
-                )
-
-            st.divider()
-
-            # ── Rebill attempts (analyst editable) ────────────────────────────
-            st.markdown("**Rebill Attempts**")
-            rb1, rb2, rb3 = st.columns(3)
-
-            with rb1:
-                st.caption("1st Attempt")
-                r1_date  = st.date_input("Date##1",  value=None if pd.isna(row["rebill1_date"]) else row["rebill1_date"].date(), key=f"r1d_{tracker_id}")
-                r1_hours = st.number_input("Hours##1", value=float(row["rebill1_hours"] or 0), min_value=0.0, step=0.5, key=f"r1h_{tracker_id}")
-                if st.button("Save", key=f"save1_{tracker_id}"):
-                    save_rebill_attempt(conn, tracker_id, 1, r1_date, r1_hours)
-                    st.success("Saved 1st attempt.")
-                    st.rerun()
-
-            with rb2:
-                st.caption("2nd Attempt")
-                r2_date  = st.date_input("Date##2",  value=None if pd.isna(row["rebill2_date"]) else row["rebill2_date"].date(), key=f"r2d_{tracker_id}")
-                r2_hours = st.number_input("Hours##2", value=float(row["rebill2_hours"] or 0), min_value=0.0, step=0.5, key=f"r2h_{tracker_id}")
-                if st.button("Save", key=f"save2_{tracker_id}"):
-                    save_rebill_attempt(conn, tracker_id, 2, r2_date, r2_hours)
-                    st.success("Saved 2nd attempt.")
-                    st.rerun()
-
-            with rb3:
-                st.caption("3rd Attempt")
-                r3_date  = st.date_input("Date##3",  value=None if pd.isna(row["rebill3_date"]) else row["rebill3_date"].date(), key=f"r3d_{tracker_id}")
-                r3_hours = st.number_input("Hours##3", value=float(row["rebill3_hours"] or 0), min_value=0.0, step=0.5, key=f"r3h_{tracker_id}")
-                if st.button("Save", key=f"save3_{tracker_id}"):
-                    save_rebill_attempt(conn, tracker_id, 3, r3_date, r3_hours)
-                    st.success("Saved 3rd attempt.")
-                    st.rerun()
-
-            st.divider()
-
-            # ── Comment log ───────────────────────────────────────────────────
-            st.markdown("**Comments**")
-            comments_df = get_comments(conn, tracker_id)
-            if comments_df.empty:
-                st.caption("No comments yet.")
-            else:
-                for _, c in comments_df.iterrows():
-                    ts = pd.to_datetime(c["created_at"]).strftime("%m/%d/%y %I:%M %p")
-                    st.markdown(f"`{ts}` **{c['author']}** — {c['comment_text']}")
-
-            with st.form(key=f"comment_form_{tracker_id}", clear_on_submit=True):
-                author   = st.selectbox("Analyst", ANALYST_OPTIONS, key=f"auth_{tracker_id}")
-                new_note = st.text_area("Add comment", key=f"note_{tracker_id}", height=80)
-                if st.form_submit_button("Post Comment"):
-                    if new_note.strip():
-                        add_comment(conn, tracker_id, author, new_note.strip())
-                        st.rerun()
-                    else:
-                        st.warning("Comment cannot be empty.")
-
-
-# ── Resolved / Paid section ───────────────────────────────────────────────────
-with st.expander("✅ Resolved / Paid Items", expanded=False):
-    resolved_df = get_resolved_df(conn)
-    if resolved_df.empty:
-        st.info("No resolved items yet.")
+# Generate visual badges
+def make_badge(row):
+    if row["override"]:
+        return "🔒 Override"
+    elif row["resolved"] or row["status"] == "RESOLVED":
+        return "🟢 Resolved"
+    elif row["is_escalated"] or row["status"] == "ESCALATED":
+        return "🔴 Escalated"
+    elif row["status"] == "PARTIAL":
+        return "🟠 Partial"
     else:
-        for _, row in resolved_df.iterrows():
-            rcol1, rcol2 = st.columns([8, 1])
-            rcol1.write(
-                f"**{row['client_name']}** | {row['payer']} | "
-                f"DOS {row['first_dos']} – {row['last_dos']} | "
-                f"Paid {row['payment_date']}"
-            )
-            if rcol2.button("Re-open", key=f"reopen_{row['id']}"):
-                reopen_resolved_row(conn, int(row["id"]))
-                st.success("Row re-opened and returned to pending.")
-                st.rerun()
+        return "🟡 Pending"
+
+if not df.empty:
+    df["status_badge"] = df.apply(make_badge, axis=1)
+    
+    # Sort: Escalated & Open first, then Pending, then Overridden, then Resolved
+    def sort_rank(row):
+        if row["override"]:
+            return 3
+        elif row["resolved"] or row["status"] == "RESOLVED":
+            return 4
+        elif row["is_escalated"] or row["status"] == "ESCALATED":
+            return 1
+        else:
+            return 2
+    df["rank"] = df.apply(sort_rank, axis=1)
+    df = df.sort_values(["rank", "first_dos"], ascending=[True, True])
+    # Don't set id as index, keep it as a column for safe positional lookup
+    # df.set_index("id", inplace=True)
+    
+    # Keep and format required columns
+    display_cols = [
+        "status_badge", "client_name", "payer", "first_dos", "last_dos",
+        "regular_hours", "respite_hours", "pending_hours",
+        "notes", "override_reason", "override", "follow_up_date"
+    ]
+    df_display = df[display_cols].copy()
+    
+    # Guard all NaT/NaN/None values for Streamlit
+    for col in ["first_dos", "last_dos", "follow_up_date"]:
+        df_display[col] = df_display[col].apply(lambda x: None if pd.isna(x) else x)
+        
+    df_display["regular_hours"] = df_display["regular_hours"].fillna(0.0).astype(float)
+    df_display["respite_hours"] = df_display["respite_hours"].fillna(0.0).astype(float)
+    df_display["pending_hours"] = df_display["pending_hours"].fillna(0.0).astype(float)
+    df_display["notes"] = df_display["notes"].fillna("")
+    df_display["override_reason"] = df_display["override_reason"].fillna("")
+
+    # Reset index to ensure clean positional indexing (0, 1, 2...) for st.data_editor
+    df_display = df_display.reset_index(drop=True)
+
+    # 1. On-change persistence flow
+    state_key = "unskilled_tracker_editor"
+    if state_key in st.session_state:
+        edits = st.session_state[state_key].get("edited_rows", {})
+        if edits:
+            id_map = st.session_state.get("unskilled_tracker_ids", [])
+            for str_pos, changes in edits.items():
+                pos = int(str_pos)
+                if pos < len(id_map):
+                    tracker_id = id_map[pos]
+                else:
+                    tracker_id = int(df.iloc[pos]["id"]) if "id" in df.columns else int(df.index[pos])
+                
+                # DEBUG LOGGING
+                with open("debug_edits.log", "a") as f_dbg:
+                    f_dbg.write(f"RERUN: Edited str_pos={str_pos}, pos={pos}, extracted tracker_id={tracker_id}, changes={changes}\n")
+
+                
+                row_data = conn.execute(
+                    "SELECT status, notes, follow_up_date, resolved, override, override_reason, payment_date, client_name, payer, first_dos, last_dos FROM unskilled_remit_tracker WHERE id = ?",
+                    [tracker_id]
+                ).fetchone()
+                if not row_data:
+                    continue
+                cur_status, cur_notes, cur_follow_up, cur_resolved, cur_override, cur_override_reason, cur_pay_date, c_name, c_payer, c_fdos, c_ldos = row_data
+                
+                new_status = changes.get("status", cur_status)
+                new_notes = changes.get("notes", cur_notes)
+                new_follow_up = changes.get("follow_up_date", cur_follow_up)
+                new_resolved = changes.get("resolved", bool(cur_resolved))
+                new_override = changes.get("override", bool(cur_override))
+                new_override_reason = changes.get("override_reason", cur_override_reason)
+                
+                # Auto-align resolved flag and status
+                if "resolved" in changes:
+                    if changes["resolved"]:
+                        new_status = "RESOLVED"
+                    else:
+                        new_status = "PENDING" if new_status == "RESOLVED" else new_status
+                if "status" in changes:
+                    if changes["status"] == "RESOLVED":
+                        new_resolved = True
+                    else:
+                        new_resolved = False if new_status != "RESOLVED" else new_resolved
+                        
+                payment_date_val = cur_pay_date
+                if new_resolved and not payment_date_val:
+                    payment_date_val = date.today()
+                elif not new_resolved:
+                    payment_date_val = None
+                    
+                # Audit fields for override
+                overridden_by = None
+                override_date_val = None
+                if new_override:
+                    overridden_by = st.session_state.get("active_analyst", "MA")
+                    row_audit = conn.execute("SELECT overridden_by, override_date FROM unskilled_remit_tracker WHERE id = ?", [tracker_id]).fetchone()
+                    if row_audit and row_audit[0]:
+                        overridden_by = row_audit[0]
+                        override_date_val = row_audit[1]
+                    else:
+                        override_date_val = date.today()
+                else:
+                    overridden_by = None
+                    override_date_val = None
+                
+                # Guard NaT/empty dates
+                if new_follow_up == "":
+                    new_follow_up = None
+                elif pd.isna(new_follow_up):
+                    new_follow_up = None
+                elif isinstance(new_follow_up, str):
+                    try:
+                        new_follow_up = pd.to_datetime(new_follow_up).date()
+                    except Exception:
+                        new_follow_up = None
+
+                conn.execute("""
+                    UPDATE unskilled_remit_tracker
+                    SET status = ?,
+                        notes = ?,
+                        follow_up_date = ?,
+                        resolved = ?,
+                        override = ?,
+                        override_reason = ?,
+                        overridden_by = ?,
+                        override_date = ?,
+                        payment_date = ?
+                    WHERE id = ?
+                """, [
+                    new_status, new_notes, new_follow_up, new_resolved,
+                    new_override, new_override_reason, overridden_by, override_date_val,
+                    payment_date_val, tracker_id
+                ])
+                
+                # Back-propagate to reconciliation table so Dashboards and Ledgers see it
+                if new_override:
+                    reason_to_save = new_override_reason if new_override_reason else "Override"
+                    conn.execute("""
+                        UPDATE reconciliation
+                        SET analyst_override = ?
+                        WHERE client_name_payroll = ?
+                          AND insurance = ?
+                          AND week_start_date = ?
+                          AND week_end_date = ?
+                          AND care_type = 'Unskilled'
+                    """, [reason_to_save, c_name, c_payer, c_fdos, c_ldos])
+                elif not new_override and cur_override:
+                    # Clear override if unchecked
+                    conn.execute("""
+                        UPDATE reconciliation
+                        SET analyst_override = NULL
+                        WHERE client_name_payroll = ?
+                          AND insurance = ?
+                          AND week_start_date = ?
+                          AND week_end_date = ?
+                          AND care_type = 'Unskilled'
+                    """, [c_name, c_payer, c_fdos, c_ldos])
+                    
+            conn.commit()
+            st.success("Edits saved successfully!")
+            del st.session_state[state_key]
+            st.rerun()
+
+    st.caption(f"Showing {len(df)} tracker entries. Double-click cells to edit inline, then click outside the table or press Enter to apply.")
+
+    # Apply CSS color styling to rows
+    def style_row(row):
+        if row.get("override") or "Override" in row.get("status_badge", ""):
+            return ["background-color: #1e1b4b; color: #a5b4fc;"] * len(row)
+        elif "Resolved" in row.get("status_badge", ""):
+            return ["background-color: #064e3b; color: #6ee7b7;"] * len(row)
+        elif "🔴 Escalated" in row.get("status_badge", ""):
+            return ["background-color: #4c0519; color: #fda4af;"] * len(row)
+        return [""] * len(row)
+
+    styled_df = df_display.style.apply(style_row, axis=1)
+
+    # Save ID mapping for robust positional lookup on rerun
+    st.session_state["unskilled_tracker_ids"] = df["id"].tolist()
+
+    # Render data editor
+    st.data_editor(
+        styled_df,
+        key=state_key,
+        use_container_width=True,
+        hide_index=True,
+        disabled=[
+            "status_badge", "client_name", "payer", "first_dos", "last_dos",
+            "regular_hours", "respite_hours", "pending_hours"
+        ],
+        column_config={
+            "status_badge": st.column_config.TextColumn("Badge", disabled=True, width="small"),
+            "client_name": st.column_config.TextColumn("Client", disabled=True),
+            "payer": st.column_config.TextColumn("Payer", disabled=True, width="small"),
+            "first_dos": st.column_config.DateColumn("First DOS", disabled=True, format="YYYY-MM-DD", width="small"),
+            "last_dos": st.column_config.DateColumn("Last DOS", disabled=True, format="YYYY-MM-DD", width="small"),
+            "regular_hours": st.column_config.NumberColumn("Reg Hrs", format="%.1f", disabled=True, width="small"),
+            "respite_hours": st.column_config.NumberColumn("Resp Hrs", format="%.1f", disabled=True, width="small"),
+            "pending_hours": st.column_config.NumberColumn("Pending Hrs", format="%.1f", disabled=True, width="small"),
+            "notes": st.column_config.TextColumn("Notes", width="large"),
+            "override_reason": st.column_config.SelectboxColumn("Close Reason", options=["", "Paid", "Lost Money", "Write Off", "Duplicate", "Other"], width="medium"),
+            "override": st.column_config.CheckboxColumn("Close Claim", width="small"),
+            "follow_up_date": st.column_config.DateColumn("Follow-Up Date", format="YYYY-MM-DD", width="small")
+        }
+    )
+else:
+    st.info("No items match the current filters.")

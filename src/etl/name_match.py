@@ -25,7 +25,7 @@ import pandas as pd
 
 # Role suffixes that may appear at the end of payroll names
 _ROLE_SUFFIX = re.compile(
-    r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\(LPN\)|\(RN\)|\(PCA\))$",
+    r"\s+(?:PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA|LIVE-IN|LIVE IN|\(LPN\)|\(RN\)|\(PCA\))$",
     re.IGNORECASE,
 )
 

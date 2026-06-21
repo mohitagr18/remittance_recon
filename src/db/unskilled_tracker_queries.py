@@ -60,10 +60,10 @@ def sync_pending_from_reconciliation(conn: duckdb.DuckDBPyConnection) -> int:
             r.week_end_date,
             r.payroll_hours,
             0,                          -- respite_hours placeholder; updated below
-            r.payroll_hours - COALESCE(r.paid_hours, 0),
+            r.payroll_hours - GREATEST(0, COALESCE(r.paid_hours, 0)),
             CASE
-                WHEN (r.payroll_hours - COALESCE(r.paid_hours, 0)) < 2 THEN 'RESOLVED'
-                WHEN COALESCE(r.paid_hours, 0) > 0                    THEN 'PARTIAL'
+                WHEN (r.payroll_hours - GREATEST(0, COALESCE(r.paid_hours, 0))) < 2 THEN 'RESOLVED'
+                WHEN GREATEST(0, COALESCE(r.paid_hours, 0)) > 0                    THEN 'PARTIAL'
                 ELSE 'PENDING'
             END,
             CURRENT_DATE,
@@ -87,10 +87,10 @@ def sync_pending_from_reconciliation(conn: duckdb.DuckDBPyConnection) -> int:
 
 def sync_payments_from_remittance(conn: duckdb.DuckDBPyConnection) -> int:
     """
-    Update pending_hours on all open tracker rows by matching against the
-    latest remittance data (client_name_combined + first_dos + last_dos).
+    Update pending_hours on all open tracker rows by pulling paid_hours
+    directly from the reconciliation table (which handles overlap logic and name matching).
 
-    - Deducts paid_hours from the remittance table.
+    - Deducts paid_hours from reconciliation.
     - If pending_hours < RESOLVED_HOURS_THRESHOLD → stamps payment_date + sets RESOLVED.
     - Returns count of rows updated.
     """
@@ -101,58 +101,50 @@ def sync_payments_from_remittance(conn: duckdb.DuckDBPyConnection) -> int:
             pending_hours = GREATEST(
                 0,
                 (t.regular_hours + t.respite_hours) -
-                COALESCE((
-                    SELECT SUM(rem.paid_hours)
-                    FROM remittance rem
-                    JOIN name_match nm
-                        ON LOWER(TRIM(rem.client_name_combined)) = LOWER(TRIM(nm.remittance_name))
-                    WHERE LOWER(TRIM(nm.payroll_name)) = LOWER(TRIM(t.client_name))
-                      AND rem.first_dos  = t.first_dos
-                      AND rem.last_dos   = t.last_dos
-                      AND rem.insurance  = t.payer
-                ), 0)
+                GREATEST(0, COALESCE((
+                    SELECT MAX(r.paid_hours)
+                    FROM reconciliation r
+                    WHERE r.client_name_payroll = t.client_name
+                      AND r.week_start_date = t.first_dos
+                      AND r.week_end_date   = t.last_dos
+                      AND r.care_type       = 'Unskilled'
+                ), 0))
             ),
             status = CASE
                 WHEN GREATEST(
                     0,
                     (t.regular_hours + t.respite_hours) -
-                    COALESCE((
-                        SELECT SUM(rem.paid_hours)
-                        FROM remittance rem
-                        JOIN name_match nm
-                            ON LOWER(TRIM(rem.client_name_combined)) = LOWER(TRIM(nm.remittance_name))
-                        WHERE LOWER(TRIM(nm.payroll_name)) = LOWER(TRIM(t.client_name))
-                          AND rem.first_dos  = t.first_dos
-                          AND rem.last_dos   = t.last_dos
-                          AND rem.insurance  = t.payer
-                    ), 0)
+                    GREATEST(0, COALESCE((
+                        SELECT MAX(r.paid_hours)
+                        FROM reconciliation r
+                        WHERE r.client_name_payroll = t.client_name
+                          AND r.week_start_date = t.first_dos
+                          AND r.week_end_date   = t.last_dos
+                          AND r.care_type       = 'Unskilled'
+                    ), 0))
                 ) < ? THEN 'RESOLVED'
-                WHEN COALESCE((
-                    SELECT SUM(rem.paid_hours)
-                    FROM remittance rem
-                    JOIN name_match nm
-                        ON LOWER(TRIM(rem.client_name_combined)) = LOWER(TRIM(nm.remittance_name))
-                    WHERE LOWER(TRIM(nm.payroll_name)) = LOWER(TRIM(t.client_name))
-                      AND rem.first_dos  = t.first_dos
-                      AND rem.last_dos   = t.last_dos
-                      AND rem.insurance  = t.payer
-                ), 0) > 0 THEN 'PARTIAL'
+                WHEN GREATEST(0, COALESCE((
+                    SELECT MAX(r.paid_hours)
+                    FROM reconciliation r
+                    WHERE r.client_name_payroll = t.client_name
+                      AND r.week_start_date = t.first_dos
+                      AND r.week_end_date   = t.last_dos
+                      AND r.care_type       = 'Unskilled'
+                ), 0)) > 0 THEN 'PARTIAL'
                 ELSE t.status
             END,
             payment_date = CASE
                 WHEN GREATEST(
                     0,
                     (t.regular_hours + t.respite_hours) -
-                    COALESCE((
-                        SELECT SUM(rem.paid_hours)
-                        FROM remittance rem
-                        JOIN name_match nm
-                            ON LOWER(TRIM(rem.client_name_combined)) = LOWER(TRIM(nm.remittance_name))
-                        WHERE LOWER(TRIM(nm.payroll_name)) = LOWER(TRIM(t.client_name))
-                          AND rem.first_dos  = t.first_dos
-                          AND rem.last_dos   = t.last_dos
-                          AND rem.insurance  = t.payer
-                    ), 0)
+                    GREATEST(0, COALESCE((
+                        SELECT MAX(r.paid_hours)
+                        FROM reconciliation r
+                        WHERE r.client_name_payroll = t.client_name
+                          AND r.week_start_date = t.first_dos
+                          AND r.week_end_date   = t.last_dos
+                          AND r.care_type       = 'Unskilled'
+                    ), 0))
                 ) < ? THEN CURRENT_DATE
                 ELSE t.payment_date
             END,
@@ -174,34 +166,70 @@ def refresh_escalation_flags(conn: duckdb.DuckDBPyConnection) -> None:
     age_months = _escalation_age_months(conn)
 
     conn.execute("""
+        WITH volume_anchors AS (
+            SELECT a.id AS anchor_id, a.client_name, a.first_dos
+            FROM unskilled_remit_tracker a
+            JOIN unskilled_remit_tracker b
+              ON a.client_name = b.client_name
+              AND b.first_dos >= a.first_dos
+              AND b.first_dos <= a.first_dos + INTERVAL 61 DAYS
+              AND b.status != 'RESOLVED'
+              AND b.override = FALSE
+            WHERE a.status != 'RESOLVED'
+              AND a.override = FALSE
+            GROUP BY a.id, a.client_name, a.first_dos
+            HAVING COUNT(b.id) >= ?
+        ),
+        volume_escalated_ids AS (
+            SELECT DISTINCT b.id
+            FROM volume_anchors a
+            JOIN unskilled_remit_tracker b
+              ON a.client_name = b.client_name
+              AND b.first_dos >= a.first_dos
+              AND b.first_dos <= a.first_dos + INTERVAL 61 DAYS
+              AND b.status != 'RESOLVED'
+              AND b.override = FALSE
+        ),
+        flags AS (
+            SELECT 
+                base.id,
+                CASE WHEN v.id IS NOT NULL THEN TRUE ELSE FALSE END AS volume_flag,
+                (base.first_dos <= CURRENT_DATE - CAST(? AS INTEGER) * INTERVAL '1 MONTH') AS age_flag
+            FROM unskilled_remit_tracker base
+            LEFT JOIN volume_escalated_ids v ON base.id = v.id
+            WHERE base.status != 'RESOLVED'
+              AND base.override = FALSE
+        )
         UPDATE unskilled_remit_tracker AS t
         SET
-            is_escalated = (
-                volume_flag OR age_flag
-            ),
+            is_escalated = (flags.volume_flag OR flags.age_flag),
             escalation_reason = CASE
-                WHEN volume_flag AND age_flag THEN 'VOLUME,AGE'
-                WHEN volume_flag              THEN 'VOLUME'
-                WHEN age_flag                 THEN 'AGE'
+                WHEN flags.volume_flag AND flags.age_flag THEN 'VOLUME,AGE'
+                WHEN flags.volume_flag THEN 'VOLUME'
+                WHEN flags.age_flag THEN 'AGE'
                 ELSE NULL
             END,
             status = CASE
-                WHEN (volume_flag OR age_flag) AND t.status != 'RESOLVED' THEN 'ESCALATED'
-                WHEN NOT (volume_flag OR age_flag) AND t.status = 'ESCALATED' THEN 'PENDING'
+                WHEN (flags.volume_flag OR flags.age_flag) AND t.status != 'RESOLVED' THEN 'ESCALATED'
+                WHEN NOT (flags.volume_flag OR flags.age_flag) AND t.status = 'ESCALATED' THEN 'PENDING'
                 ELSE t.status
             END,
             updated_at = CURRENT_TIMESTAMP
-        FROM (
-            SELECT
-                id,
-                (                     SELECT COUNT(*)                     FROM unskilled_remit_tracker o                     WHERE o.client_name = base.client_name                       AND o.status != 'RESOLVED'                       AND ABS(DATEDIFF('month', o.first_dos, base.first_dos)) <= 2                 ) >= ? AS volume_flag,
-                (DATEDIFF('month', entry_date, CURRENT_DATE) >= ?)  AS age_flag
-            FROM unskilled_remit_tracker base
-            WHERE status != 'RESOLVED'
-        ) flags
+        FROM flags
         WHERE t.id = flags.id
           AND t.status != 'RESOLVED'
+          AND t.override = FALSE
     """, [count_threshold, age_months])
+
+    # Forcefully clear escalation flags on any overridden rows
+    conn.execute("""
+        UPDATE unskilled_remit_tracker
+        SET is_escalated = FALSE,
+            escalation_reason = NULL,
+            status = CASE WHEN status = 'ESCALATED' THEN 'PENDING' ELSE status END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE override = TRUE
+    """)
     conn.commit()
 
 
@@ -230,6 +258,13 @@ def get_pending_df(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
             t.escalation_reason,
             t.entry_date,
             t.updated_at,
+            t.notes,
+            t.follow_up_date,
+            t.resolved,
+            t.override,
+            t.override_reason,
+            t.overridden_by,
+            t.override_date,
             COALESCE(c.comment_count, 0) AS comment_count
         FROM unskilled_remit_tracker t
         LEFT JOIN (
@@ -237,8 +272,8 @@ def get_pending_df(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
             FROM unskilled_remit_comments
             GROUP BY tracker_id
         ) c ON c.tracker_id = t.id
-        WHERE t.status != 'RESOLVED'
-        ORDER BY t.is_escalated DESC, t.entry_date ASC
+        WHERE t.status != 'RESOLVED' AND COALESCE(t.resolved, FALSE) = FALSE
+        ORDER BY t.is_escalated DESC, t.first_dos ASC
     """).df()
 
 
@@ -258,9 +293,16 @@ def get_resolved_df(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
             t.rebill3_date, t.rebill3_hours,
             t.payment_date,
             t.entry_date,
-            t.updated_at
+            t.updated_at,
+            t.notes,
+            t.follow_up_date,
+            t.resolved,
+            t.override,
+            t.override_reason,
+            t.overridden_by,
+            t.override_date
         FROM unskilled_remit_tracker t
-        WHERE t.status = 'RESOLVED'
+        WHERE t.status = 'RESOLVED' OR COALESCE(t.resolved, FALSE) = TRUE
         ORDER BY t.payment_date DESC
     """).df()
 
@@ -282,15 +324,15 @@ def get_kpis(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
             COUNT(*)                                               AS total_open,
             COALESCE(SUM(pending_hours), 0)                        AS total_pending_hours,
             COUNT(*) FILTER (WHERE is_escalated)                   AS escalated_count,
-            COALESCE(AVG(DATEDIFF('day', entry_date, CURRENT_DATE)), 0) AS avg_days_open,
+            COALESCE(AVG(DATEDIFF('day', first_dos, CURRENT_DATE)), 0) AS avg_days_open,
             COUNT(*) FILTER (WHERE status = 'PARTIAL')             AS partial_count
         FROM unskilled_remit_tracker
-        WHERE status != 'RESOLVED'
+        WHERE status != 'RESOLVED' AND COALESCE(resolved, FALSE) = FALSE AND COALESCE(override, FALSE) = FALSE
     """).fetchone()
 
     resolved_this_month = conn.execute("""
         SELECT COUNT(*) FROM unskilled_remit_tracker
-        WHERE status = 'RESOLVED'
+        WHERE (status = 'RESOLVED' OR COALESCE(resolved, FALSE) = TRUE)
           AND YEAR(payment_date)  = YEAR(CURRENT_DATE)
           AND MONTH(payment_date) = MONTH(CURRENT_DATE)
     """).fetchone()[0]
@@ -313,11 +355,11 @@ def get_escalation_by_client(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
             payer,
             COUNT(*)                                   AS open_entries,
             COALESCE(SUM(pending_hours), 0)            AS total_pending_hours,
-            MIN(entry_date)                            AS oldest_entry,
-            DATEDIFF('day', MIN(entry_date), CURRENT_DATE) AS days_outstanding,
+            MIN(first_dos)                            AS oldest_entry,
+            DATEDIFF('day', MIN(first_dos), CURRENT_DATE) AS days_outstanding,
             STRING_AGG(DISTINCT escalation_reason, ', ') AS reasons
         FROM unskilled_remit_tracker
-        WHERE is_escalated = TRUE AND status != 'RESOLVED'
+        WHERE is_escalated = TRUE AND status != 'RESOLVED' AND COALESCE(override, FALSE) = FALSE
         GROUP BY client_name, payer
         ORDER BY days_outstanding DESC
     """).df()
@@ -329,11 +371,11 @@ def get_aged_items(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     return conn.execute("""
         SELECT
             id, client_name, payer, first_dos, last_dos,
-            pending_hours, entry_date,
-            DATEDIFF('day', entry_date, CURRENT_DATE) AS days_outstanding
+            pending_hours, first_dos AS entry_date,
+            DATEDIFF('day', first_dos, CURRENT_DATE) AS days_outstanding
         FROM unskilled_remit_tracker
-        WHERE status != 'RESOLVED'
-          AND DATEDIFF('month', entry_date, CURRENT_DATE) >= ?
+        WHERE status != 'RESOLVED' AND COALESCE(override, FALSE) = FALSE
+          AND DATEDIFF('month', first_dos, CURRENT_DATE) >= ?
         ORDER BY days_outstanding DESC
     """, [age_months]).df()
 
@@ -395,3 +437,37 @@ ANALYST_OPTIONS: list[str] = [
     "Connie",
     "Pragya",
 ]
+import duckdb
+import pandas as pd
+from src.db.queries import copay_monthly_status
+
+import duckdb
+import pandas as pd
+from src.db.queries import copay_monthly_status
+
+def resolve_copay_clients(conn: duckdb.DuckDBPyConnection) -> int:
+    df = copay_monthly_status(conn)
+    if df.empty:
+        return 0
+    good_df = df[df["copay_status"] == "Good"]
+    
+    updated = 0
+    for _, row in good_df.iterrows():
+        client = row["client_name"]
+        yr = int(row["yr"])
+        mo = int(row["mo"])
+        month_str = f"{yr:04d}-{mo:02d}"
+        
+        updated += conn.execute("""
+            UPDATE unskilled_remit_tracker
+            SET status = 'RESOLVED',
+                resolved = TRUE,
+                notes = COALESCE(NULLIF(notes, ''), 'Resolved via Monthly Copay Validation: Insurance paid as expected.'),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE client_name = ?
+              AND strftime(first_dos, '%Y-%m') = ?
+              AND status != 'RESOLVED'
+        """, [client, month_str]).rowcount
+    return updated
+
+

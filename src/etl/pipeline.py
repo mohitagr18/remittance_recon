@@ -830,7 +830,7 @@ def rebuild_reconciliation(
                 remit_name, match_status = resolve_client_name(payroll_name, name_mapping)
                 
                 if match_status == "NOT_AVAILABLE":
-                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, match_status, None)
+                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, match_status, None, care_type)
                 elif remit_name:
                     client_key = _normalize_client_key(remit_name)
                     rem_key = (client_key, care_type)
@@ -840,10 +840,10 @@ def rebuild_reconciliation(
                         paid_hrs = rem_data["paid_hours"]
                         remit_insurance = rem_data["insurance"]
                         consumed_remit.add(rem_key)
-                        matched_results[(payroll_name, care_type)] = (billed_hrs, paid_hrs, remit_insurance, match_status, remit_name)
+                        matched_results[(payroll_name, care_type)] = (billed_hrs, paid_hrs, remit_insurance, match_status, remit_name, care_type)
                 else:
                     unmatched_clients.add(payroll_name)
-                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, "UNMATCHED", None)
+                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, "UNMATCHED", None, care_type)
 
             # Pass 2: Fallback Match (differing care type) for unmatched entries
             for (payroll_name, care_type), pay_data in grouped_pay.items():
@@ -864,7 +864,7 @@ def rebuild_reconciliation(
                         paid_hrs = rem_data["paid_hours"]
                         remit_insurance = rem_data["insurance"]
                         consumed_remit.add(fallback_key)
-                        matched_results[(payroll_name, care_type)] = (billed_hrs, paid_hrs, remit_insurance, match_status, remit_name)
+                        matched_results[(payroll_name, care_type)] = (billed_hrs, paid_hrs, remit_insurance, match_status, remit_name, fallback_key[1])
                         log.debug(
                             "Care type fallback used for %s: payroll=%s, remit care_type differs",
                             payroll_name, care_type
@@ -872,13 +872,13 @@ def rebuild_reconciliation(
 
                 # If still not matched, default to 0.0
                 if (payroll_name, care_type) not in matched_results:
-                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, match_status, remit_name)
+                    matched_results[(payroll_name, care_type)] = (0.0, 0.0, None, match_status, remit_name, care_type)
 
             # Append matched payroll reconciliation rows
             for (payroll_name, care_type), pay_data in grouped_pay.items():
                 insurance = pay_data["insurance"]
                 payroll_hrs = pay_data["total_hours"]
-                billed_hrs, paid_hrs, remit_insurance, match_status, remit_name = matched_results[(payroll_name, care_type)]
+                billed_hrs, paid_hrs, remit_insurance, match_status, remit_name, final_care_type = matched_results[(payroll_name, care_type)]
                 copay = is_copay_client(payroll_name, copay_set)
 
                 final_insurance = insurance or remit_insurance
@@ -909,7 +909,7 @@ def rebuild_reconciliation(
                     "analyst_override": prev.get("analyst_override"),
                     "yash_comments": prev.get("yash_comments"),
                     "connie_comments": prev.get("connie_comments"),
-                    "care_type": care_type,
+                    "care_type": final_care_type,
                 })
 
         # Step 2: Add unconsumed/leftover remittance records (either remittance-only weeks or unconsumed claims in payroll weeks)

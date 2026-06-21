@@ -383,6 +383,9 @@ if not ledger_df.empty:
         payroll_by_week[ws] = {
             "week_payroll_hours": float(grp["week_payroll_hours"].iloc[0] or 0.0),
             "week_result_detailed": grp["week_result_detailed"].iloc[0] if "week_result_detailed" in grp.columns else None,
+            "override": bool(grp["override"].iloc[0]) if "override" in grp.columns else False,
+            "override_reason": grp["override_reason"].iloc[0] if "override_reason" in grp.columns else None,
+            "analyst_override": grp["analyst_override"].iloc[0] if "analyst_override" in grp.columns else None,
         }
 
 if selected_week:
@@ -451,9 +454,21 @@ if not raw_remit_df.empty:
 
         payroll_info    = payroll_by_week.get(w_start, {})
         w_payroll_hrs   = payroll_info.get("week_payroll_hours", 0.0)
-        w_pending_hrs   = max(round(w_payroll_hrs - sum_paid_hrs, 2), 0.0)
+        is_overridden   = payroll_info.get("override", False)
+        analyst_override = payroll_info.get("analyst_override")
+        
+        is_closed = is_overridden or bool(analyst_override)
+        w_pending_hrs   = 0.0 if is_closed else max(round(w_payroll_hrs - sum_paid_hrs, 2), 0.0)
 
-        if w_payroll_hrs > 0:
+        if analyst_override == "Lost Money":
+            status = "Lost Money"
+        elif analyst_override == "Paid":
+            status = "Paid"
+        elif analyst_override:
+            status = f"Closed: {analyst_override}"
+        elif is_overridden:
+            status = f"Override – {payroll_info.get('override_reason') or ''}"
+        elif w_payroll_hrs > 0:
             if sum_paid_hrs > w_payroll_hrs + 0.9:
                 status = "Paid Extra"
             elif sum_paid_hrs >= w_payroll_hrs - 0.9:
@@ -517,6 +532,15 @@ if not raw_remit_df.empty:
         _billed  = consolidated_df["billed_hours"].fillna(0.0).astype(float)
         _delta   = _paid - _payroll
 
+        # Exclude overridden weeks from netting calculations and set pending to 0
+        for i in range(len(consolidated_df)):
+            idx = consolidated_df.index[i]
+            ws = consolidated_df.at[idx, "first_dos"]
+            payroll_info = payroll_by_week.get(ws, {})
+            if payroll_info.get("override"):
+                _delta.iloc[i] = 0.0
+                consolidated_df.at[idx, "week_pending_hrs"] = 0.0
+
         _adj = [0.0] * len(consolidated_df)
 
         for i in range(len(consolidated_df) - 1):
@@ -533,13 +557,34 @@ if not raw_remit_df.empty:
                 _adj[i+1] += net
 
         for i in range(len(consolidated_df)):
+            idx       = consolidated_df.index[i]
+            this_week = consolidated_df.at[idx, "first_dos"]
+            payroll_info = payroll_by_week.get(this_week, {})
+            
+            analyst_override = payroll_info.get("analyst_override")
+            is_overridden = payroll_info.get("override")
+            if analyst_override == "Lost Money":
+                consolidated_df.at[idx, "week_pending_hrs"] = 0.0
+                consolidated_df.at[idx, "reconciled_status"] = "Lost Money"
+                continue
+            elif analyst_override == "Paid":
+                consolidated_df.at[idx, "week_pending_hrs"] = 0.0
+                consolidated_df.at[idx, "reconciled_status"] = "Paid"
+                continue
+            elif analyst_override:
+                consolidated_df.at[idx, "week_pending_hrs"] = 0.0
+                consolidated_df.at[idx, "reconciled_status"] = f"Closed: {analyst_override}"
+                continue
+            elif is_overridden:
+                consolidated_df.at[idx, "week_pending_hrs"] = 0.0
+                consolidated_df.at[idx, "reconciled_status"] = f"Override – {payroll_info.get('override_reason') or ''}"
+                continue
+
             if abs(_adj[i]) < 0.01:
                 continue
 
-            idx       = consolidated_df.index[i]
             p_hrs     = float(_payroll.iloc[i])
             pd_eff    = float(_paid.iloc[i]) + _adj[i]
-            this_week = consolidated_df.at[idx, "first_dos"]
 
             new_pending = max(round(p_hrs - pd_eff, 2), 0.0) if p_hrs > 0 else 0.0
             consolidated_df.at[idx, "week_pending_hrs"] = new_pending

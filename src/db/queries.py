@@ -81,10 +81,18 @@ def copay_monthly_status(
                 SUM(r.billed_hours) AS total_billed_hours,
                 SUM(r.paid_hours)   AS total_paid_hours
             FROM reconciliation r
+            LEFT JOIN unskilled_remit_tracker t ON (
+                r.care_type = 'Unskilled'
+                AND r.client_name_payroll = t.client_name
+                AND r.insurance = t.payer
+                AND r.week_start_date = t.first_dos
+                AND r.week_end_date = t.last_dos
+            )
             WHERE UPPER(regexp_replace(
                     r.client_name_payroll,
                     '(?i)\\s+(Live-?[Ii]n|PCA|LPN|RN|CNA|HHA|MA|NP|PA|CHHA)$', ''
                   )) IN (SELECT UPPER(client_name) FROM copay_clients_active)
+              AND COALESCE(t.override, FALSE) = FALSE
             {year_filter}
             {month_filter}
             GROUP BY client_upper, client_name_payroll, r.insurance, yr, mo
@@ -199,16 +207,24 @@ def weekly_summary(
     filters = _week_insurance_filter(week_start, insurance, care_type=care_type, start_date=start_date, end_date=end_date)
     sql = f"""
         SELECT
-            COUNT(DISTINCT COALESCE(client_name_payroll, client_name_remittance)) AS total_clients,
-            SUM(payroll_hours)                                                  AS total_payroll_hrs,
-            SUM(billed_hours)                                                   AS total_billed_hrs,
-            SUM(paid_hours)                                                     AS total_paid_hrs,
-            SUM(GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0)) AS pending_hrs,
-            COUNT(*) FILTER (WHERE result_simple = 'Follow up')                 AS followup_count,
+            MIN(reconciliation.week_start_date)                                                 AS week_start_date,
+            COUNT(DISTINCT COALESCE(reconciliation.client_name_payroll, reconciliation.client_name_remittance)) AS total_clients,
+            SUM(reconciliation.payroll_hours)                                                  AS total_payroll_hrs,
+            SUM(reconciliation.billed_hours)                                                   AS total_billed_hrs,
+            SUM(reconciliation.paid_hours)                                                     AS total_paid_hrs,
+            SUM(CASE WHEN COALESCE(t.override, FALSE) = TRUE THEN 0 ELSE GREATEST(COALESCE(reconciliation.payroll_hours, 0) - GREATEST(0, COALESCE(reconciliation.paid_hours, 0)), 0) END) AS pending_hrs,
+            COUNT(*) FILTER (WHERE reconciliation.result_simple = 'Follow up' AND COALESCE(t.override, FALSE) = FALSE)                 AS followup_count,
             ROUND(
-                100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1
+                100.0 * SUM(reconciliation.paid_hours) / NULLIF(SUM(reconciliation.billed_hours), 0), 1
             )                                                                   AS collection_rate_pct
         FROM reconciliation
+        LEFT JOIN unskilled_remit_tracker t ON (
+            reconciliation.care_type = 'Unskilled'
+            AND reconciliation.client_name_payroll = t.client_name
+            AND reconciliation.insurance = t.payer
+            AND reconciliation.week_start_date = t.first_dos
+            AND reconciliation.week_end_date = t.last_dos
+        )
         {filters}
     """
     return conn.execute(sql).df()
@@ -240,29 +256,37 @@ def followup_items(
         clauses.append(f"result_detailed = '{reason}'")
     if care_type:
         clauses.append(f"care_type = '{care_type}'")
+    clauses.append("COALESCE(t.override, FALSE) = FALSE")
     where = "WHERE " + " AND ".join(clauses)
     sql = f"""
         SELECT
-            id,
-            week_start_date,
-            week_end_date,
-            insurance,
-            client_name_payroll,
-            client_name_remittance,
-            payroll_hours,
-            billed_hours,
-            paid_hours,
-            payroll_vs_billed,
-            billing_vs_paid,
-            payroll_vs_paid,
-            result_simple,
-            result_detailed,
-            analyst_override,
-            yash_comments,
-            connie_comments
+            reconciliation.id,
+            reconciliation.week_start_date,
+            reconciliation.week_end_date,
+            reconciliation.insurance,
+            reconciliation.client_name_payroll,
+            reconciliation.client_name_remittance,
+            reconciliation.payroll_hours,
+            reconciliation.billed_hours,
+            reconciliation.paid_hours,
+            reconciliation.payroll_vs_billed,
+            reconciliation.billing_vs_paid,
+            reconciliation.payroll_vs_paid,
+            reconciliation.result_simple,
+            reconciliation.result_detailed,
+            reconciliation.analyst_override,
+            reconciliation.yash_comments,
+            reconciliation.connie_comments
         FROM reconciliation
+        LEFT JOIN unskilled_remit_tracker t ON (
+            reconciliation.care_type = 'Unskilled'
+            AND reconciliation.client_name_payroll = t.client_name
+            AND reconciliation.insurance = t.payer
+            AND reconciliation.week_start_date = t.first_dos
+            AND reconciliation.week_end_date = t.last_dos
+        )
         {where}
-        ORDER BY ABS(payroll_vs_billed) DESC, client_name_payroll
+        ORDER BY ABS(reconciliation.payroll_vs_billed) DESC, reconciliation.client_name_payroll
     """
     return conn.execute(sql).df()
 
@@ -295,24 +319,32 @@ def top_followup_clients(
     sql = f"""
         WITH ranked AS (
             SELECT
-                insurance,
-                client_name_payroll,
-                week_start_date,
-                week_end_date,
-                payroll_hours,
-                billed_hours,
-                paid_hours,
-                GREATEST(ROUND(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 1), 0) AS pending_hrs,
-                ROUND(payroll_hours - billed_hours, 1) AS payroll_vs_billed,
-                result_detailed,
-                care_type,
+                reconciliation.insurance,
+                reconciliation.client_name_payroll,
+                reconciliation.week_start_date,
+                reconciliation.week_end_date,
+                reconciliation.payroll_hours,
+                reconciliation.billed_hours,
+                reconciliation.paid_hours,
+                GREATEST(ROUND(COALESCE(reconciliation.payroll_hours, 0) - GREATEST(0, COALESCE(reconciliation.paid_hours, 0)), 1), 0) AS pending_hrs,
+                ROUND(reconciliation.payroll_hours - reconciliation.billed_hours, 1) AS payroll_vs_billed,
+                reconciliation.result_detailed,
+                reconciliation.care_type,
                 ROW_NUMBER() OVER (
-                    PARTITION BY client_name_payroll
-                    ORDER BY GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0) DESC
+                    PARTITION BY reconciliation.client_name_payroll
+                    ORDER BY GREATEST(COALESCE(reconciliation.payroll_hours, 0) - GREATEST(0, COALESCE(reconciliation.paid_hours, 0)), 0) DESC
                 ) AS rn
             FROM reconciliation
-            WHERE result_simple = 'Follow up'
-              AND result_detailed != 'Not Billed'
+            LEFT JOIN unskilled_remit_tracker t ON (
+                reconciliation.care_type = 'Unskilled'
+                AND reconciliation.client_name_payroll = t.client_name
+                AND reconciliation.insurance = t.payer
+                AND reconciliation.week_start_date = t.first_dos
+                AND reconciliation.week_end_date = t.last_dos
+            )
+            WHERE reconciliation.result_simple = 'Follow up'
+              AND COALESCE(t.override, FALSE) = FALSE
+              AND reconciliation.result_detailed != 'Not Billed'
               {date_clause}
               {ins_clause}
               {care_clause}
@@ -363,29 +395,36 @@ def weekly_recon_detail(
     if insurance:
         clauses.append(f"insurance = '{insurance}'")
     if follow_up_only:
-        clauses.append("result_simple = 'Follow up'")
+        clauses.append("reconciliation.result_simple = 'Follow up' AND COALESCE(t.override, FALSE) = FALSE")
     if care_type:
-        clauses.append(f"care_type = '{care_type}'")
+        clauses.append(f"reconciliation.care_type = '{care_type}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
         SELECT
-            insurance,
-            client_name_payroll                        AS client,
-            week_start_date                            AS week_start,
-            week_end_date                              AS week_end,
-            payroll_hours,
-            billed_hours,
-            paid_hours,
-            GREATEST(ROUND(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 1), 0) AS pending_hrs,
-            ROUND(payroll_hours - billed_hours, 1)     AS payroll_vs_billed,
-            ROUND(payroll_hours - paid_hours, 1)       AS payroll_vs_paid,
-            result_simple                              AS status,
-            result_detailed                            AS reason,
-            is_copay_client,
-            yash_comments,
-            connie_comments,
-            care_type
+            reconciliation.insurance,
+            reconciliation.client_name_payroll                        AS client,
+            reconciliation.week_start_date                            AS week_start,
+            reconciliation.week_end_date                              AS week_end,
+            reconciliation.payroll_hours,
+            reconciliation.billed_hours,
+            reconciliation.paid_hours,
+            CASE WHEN COALESCE(t.override, FALSE) = TRUE THEN 0 ELSE GREATEST(ROUND(COALESCE(reconciliation.payroll_hours, 0) - GREATEST(0, COALESCE(reconciliation.paid_hours, 0)), 1), 0) END AS pending_hrs,
+            ROUND(reconciliation.payroll_hours - reconciliation.billed_hours, 1)     AS payroll_vs_billed,
+            ROUND(reconciliation.payroll_hours - reconciliation.paid_hours, 1)       AS payroll_vs_paid,
+            CASE WHEN COALESCE(t.override, FALSE) = TRUE THEN 'Good' ELSE reconciliation.result_simple END AS status,
+            CASE WHEN COALESCE(t.override, FALSE) = TRUE THEN 'Override' ELSE reconciliation.result_detailed END AS reason,
+            reconciliation.is_copay_client,
+            reconciliation.yash_comments,
+            reconciliation.connie_comments,
+            reconciliation.care_type
         FROM reconciliation
+        LEFT JOIN unskilled_remit_tracker t ON (
+            reconciliation.care_type = 'Unskilled'
+            AND reconciliation.client_name_payroll = t.client_name
+            AND reconciliation.insurance = t.payer
+            AND reconciliation.week_start_date = t.first_dos
+            AND reconciliation.week_end_date = t.last_dos
+        )
         {where}
         ORDER BY pending_hrs DESC, ABS(payroll_vs_billed) DESC
     """
@@ -413,34 +452,43 @@ def all_reconciliation(
     if insurance:
         clauses.append(f"insurance = '{insurance}'")
     if follow_up_only:
-        clauses.append("result_simple = 'Follow up'")
+        clauses.append("reconciliation.result_simple = 'Follow up' AND COALESCE(t.override, FALSE) = FALSE")
     if care_type:
-        clauses.append(f"care_type = '{care_type}'")
+        clauses.append(f"reconciliation.care_type = '{care_type}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
         SELECT
-            id,
-            week_start_date,
-            week_end_date,
-            insurance,
-            client_name_payroll,
-            client_name_remittance,
-            payroll_hours,
-            billed_hours,
-            paid_hours,
-            payroll_vs_billed,
-            billing_vs_paid,
-            payroll_vs_paid,
-            result_simple,
-            result_detailed,
-            analyst_override,
-            is_copay_client,
-            match_status,
-            yash_comments,
-            connie_comments
+            reconciliation.id,
+            reconciliation.week_start_date,
+            reconciliation.week_end_date,
+            reconciliation.insurance,
+            reconciliation.client_name_payroll,
+            reconciliation.client_name_remittance,
+            reconciliation.payroll_hours,
+            reconciliation.billed_hours,
+            reconciliation.paid_hours,
+            reconciliation.payroll_vs_billed,
+            reconciliation.billing_vs_paid,
+            reconciliation.payroll_vs_paid,
+            reconciliation.result_simple,
+            reconciliation.result_detailed,
+            reconciliation.analyst_override,
+            reconciliation.is_copay_client,
+            reconciliation.match_status,
+            reconciliation.yash_comments,
+            reconciliation.connie_comments,
+            COALESCE(t.override, FALSE) AS override,
+            t.override_reason
         FROM reconciliation
+        LEFT JOIN unskilled_remit_tracker t ON (
+            reconciliation.care_type = 'Unskilled'
+            AND reconciliation.client_name_payroll = t.client_name
+            AND reconciliation.insurance = t.payer
+            AND reconciliation.week_start_date = t.first_dos
+            AND reconciliation.week_end_date = t.last_dos
+        )
         {where}
-        ORDER BY insurance, client_name_payroll
+        ORDER BY reconciliation.insurance, reconciliation.client_name_payroll
     """
     return conn.execute(sql).df()
 
@@ -458,10 +506,17 @@ def followup_reason_breakdown(
     filters = _week_insurance_filter(week_start, insurance, care_type=care_type, start_date=start_date, end_date=end_date, prefix="AND")
     sql = f"""
         SELECT
-            COALESCE(result_detailed, 'Unclassified') AS reason,
+            COALESCE(reconciliation.result_detailed, 'Unclassified') AS reason,
             COUNT(*) AS count
         FROM reconciliation
-        WHERE result_simple = 'Follow up'
+        LEFT JOIN unskilled_remit_tracker t ON (
+            reconciliation.care_type = 'Unskilled'
+            AND reconciliation.client_name_payroll = t.client_name
+            AND reconciliation.insurance = t.payer
+            AND reconciliation.week_start_date = t.first_dos
+            AND reconciliation.week_end_date = t.last_dos
+        )
+        WHERE reconciliation.result_simple = 'Follow up' AND COALESCE(t.override, FALSE) = FALSE
         {filters}
         GROUP BY reason
         ORDER BY count DESC
@@ -490,16 +545,23 @@ def payer_collection_rates(
     care_filter = f"AND care_type = '{care_type}'" if care_type else ""
     sql = f"""
         SELECT
-            insurance,
-            SUM(billed_hours)                                           AS billed_hrs,
-            SUM(paid_hours)                                             AS paid_hrs,
-            ROUND(100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1) AS collection_rate_pct,
-            COUNT(*) FILTER (WHERE result_simple = 'Follow up')         AS followup_count
+            reconciliation.insurance,
+            SUM(reconciliation.billed_hours)                                           AS billed_hrs,
+            SUM(reconciliation.paid_hours)                                             AS paid_hrs,
+            ROUND(100.0 * SUM(reconciliation.paid_hours) / NULLIF(SUM(reconciliation.billed_hours), 0), 1) AS collection_rate_pct,
+            COUNT(*) FILTER (WHERE reconciliation.result_simple = 'Follow up' AND COALESCE(t.override, FALSE) = FALSE)         AS followup_count
         FROM reconciliation
-        WHERE insurance IS NOT NULL
+        LEFT JOIN unskilled_remit_tracker t ON (
+            reconciliation.care_type = 'Unskilled'
+            AND reconciliation.client_name_payroll = t.client_name
+            AND reconciliation.insurance = t.payer
+            AND reconciliation.week_start_date = t.first_dos
+            AND reconciliation.week_end_date = t.last_dos
+        )
+        WHERE reconciliation.insurance IS NOT NULL
         {week_filter}
         {care_filter}
-        GROUP BY insurance
+        GROUP BY reconciliation.insurance
         ORDER BY collection_rate_pct DESC
     """
     return conn.execute(sql).df()
@@ -526,16 +588,23 @@ def rolling_trend(
         
     sql = f"""
         SELECT
-            week_start_date,
-            SUM(payroll_hours)  AS payroll_hrs,
-            SUM(billed_hours)   AS billed_hrs,
-            SUM(paid_hours)     AS paid_hrs,
-            SUM(GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0)) AS pending_hrs,
-            COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_count
+            reconciliation.week_start_date,
+            SUM(reconciliation.payroll_hours)  AS payroll_hrs,
+            SUM(reconciliation.billed_hours)   AS billed_hrs,
+            SUM(reconciliation.paid_hours)     AS paid_hrs,
+            SUM(CASE WHEN COALESCE(t.override, FALSE) = TRUE THEN 0 ELSE GREATEST(COALESCE(reconciliation.payroll_hours, 0) - GREATEST(0, COALESCE(reconciliation.paid_hours, 0)), 0) END) AS pending_hrs,
+            COUNT(*) FILTER (WHERE reconciliation.result_simple = 'Follow up' AND COALESCE(t.override, FALSE) = FALSE) AS followup_count
         FROM reconciliation
+        LEFT JOIN unskilled_remit_tracker t ON (
+            reconciliation.care_type = 'Unskilled'
+            AND reconciliation.client_name_payroll = t.client_name
+            AND reconciliation.insurance = t.payer
+            AND reconciliation.week_start_date = t.first_dos
+            AND reconciliation.week_end_date = t.last_dos
+        )
         WHERE 1=1 {ins_filter} {care_filter} {date_filter}
-        GROUP BY week_start_date
-        ORDER BY week_start_date DESC
+        GROUP BY reconciliation.week_start_date
+        ORDER BY reconciliation.week_start_date DESC
         LIMIT {weeks}
     """
     df = conn.execute(sql).df()
@@ -664,7 +733,9 @@ def client_ledger(
             r.paid_hours     AS week_paid_hours,
             r.payroll_hours  AS week_payroll_hours,
             r.result_detailed AS week_result_detailed,
-            r.result_simple   AS week_result_simple
+            r.result_simple   AS week_result_simple,
+            COALESCE(t.override, FALSE) AS override,
+            t.override_reason
         FROM rem_agg ra
         FULL OUTER JOIN (
             SELECT * FROM reconciliation
@@ -672,6 +743,13 @@ def client_ledger(
         ) r ON (
             UPPER(ra.client_name_combined) = UPPER(COALESCE(r.client_name_remittance, r.client_name_payroll))
             AND ra.first_dos BETWEEN r.week_start_date AND r.week_end_date
+        )
+        LEFT JOIN unskilled_remit_tracker t ON (
+            r.care_type = 'Unskilled'
+            AND r.client_name_payroll = t.client_name
+            AND r.insurance = t.payer
+            AND r.week_start_date = t.first_dos
+            AND r.week_end_date = t.last_dos
         )
         WHERE (
             UPPER(ra.client_name_combined) = UPPER(?)
@@ -796,13 +874,20 @@ def client_weekly_recon_with_dos(
             r.payroll_hours,
             r.billed_hours,
             r.paid_hours,
-            GREATEST(ROUND(COALESCE(r.payroll_hours, 0) - COALESCE(r.paid_hours, 0), 2), 0) AS pending_hours,
+            CASE WHEN MAX(COALESCE(t.override, FALSE)) = TRUE THEN 0 ELSE GREATEST(ROUND(COALESCE(r.payroll_hours, 0) - GREATEST(0, COALESCE(r.paid_hours, 0)), 2), 0) END AS pending_hours,
             COALESCE(MIN(rem.first_dos), r.week_start_date) AS first_dos
         FROM reconciliation r
         LEFT JOIN remittance rem ON (
             UPPER(COALESCE(r.client_name_remittance, r.client_name_payroll)) = UPPER(rem.client_name_combined)
             AND rem.first_dos BETWEEN r.week_start_date AND r.week_end_date
             AND rem.is_latest = True
+        )
+        LEFT JOIN unskilled_remit_tracker t ON (
+            r.care_type = 'Unskilled'
+            AND r.client_name_payroll = t.client_name
+            AND r.insurance = t.payer
+            AND r.week_start_date = t.first_dos
+            AND r.week_end_date = t.last_dos
         )
         {where}
         GROUP BY r.week_start_date, r.week_end_date, r.payroll_hours, r.billed_hours, r.paid_hours
@@ -820,21 +905,28 @@ def client_summary(conn: duckdb.DuckDBPyConnection, client_name: str, care_type:
 
     sql = f"""
         SELECT
-            COALESCE(MIN(client_name_payroll), MIN(client_name_remittance)) AS client_name_payroll,
-            MIN(client_name_remittance) AS client_name_remittance,
-            insurance,
-            SUM(billed_hours)   AS ytd_billed_hrs,
-            SUM(paid_hours)     AS ytd_paid_hrs,
-            SUM(payroll_hours)  AS ytd_payroll_hrs,
-            SUM(GREATEST(COALESCE(payroll_hours, 0) - COALESCE(paid_hours, 0), 0)) AS ytd_pending_hrs,
+            COALESCE(MIN(r.client_name_payroll), MIN(r.client_name_remittance)) AS client_name_payroll,
+            MIN(r.client_name_remittance) AS client_name_remittance,
+            r.insurance,
+            SUM(r.billed_hours)   AS ytd_billed_hrs,
+            SUM(r.paid_hours)     AS ytd_paid_hrs,
+            SUM(r.payroll_hours)  AS ytd_payroll_hrs,
+            SUM(CASE WHEN COALESCE(t.override, FALSE) = TRUE THEN 0 ELSE GREATEST(COALESCE(r.payroll_hours, 0) - GREATEST(0, COALESCE(r.paid_hours, 0)), 0) END) AS ytd_pending_hrs,
             COUNT(*)            AS total_weeks,
-            COUNT(*) FILTER (WHERE result_simple = 'Follow up') AS followup_weeks,
-            ROUND(100.0 * SUM(paid_hours) / NULLIF(SUM(billed_hours), 0), 1) AS collection_rate_pct
-        FROM reconciliation
-        WHERE (UPPER(regexp_replace(client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\)|Live-?[Ii]n|LIVE-?IN)$', '')) = UPPER(?)
-           OR UPPER(client_name_remittance) = UPPER(?))
+            COUNT(*) FILTER (WHERE r.result_simple = 'Follow up' AND COALESCE(t.override, FALSE) = FALSE) AS followup_weeks,
+            ROUND(100.0 * SUM(r.paid_hours) / NULLIF(SUM(r.billed_hours), 0), 1) AS collection_rate_pct
+        FROM reconciliation r
+        LEFT JOIN unskilled_remit_tracker t ON (
+            r.care_type = 'Unskilled'
+            AND r.client_name_payroll = t.client_name
+            AND r.insurance = t.payer
+            AND r.week_start_date = t.first_dos
+            AND r.week_end_date = t.last_dos
+        )
+        WHERE (UPPER(regexp_replace(r.client_name_payroll, '(?i)\\s+(PCA|LPN|RN|CNA|HHA|MA|RN|NP|PA|CHHA|\\(LPN\\)|\\(RN\\)|\\(PCA\\)|Live-?[Ii]n|LIVE-?IN)$', '')) = UPPER(?)
+           OR UPPER(r.client_name_remittance) = UPPER(?))
            {care_clause}
-        GROUP BY insurance
+        GROUP BY r.insurance
     """
     return conn.execute(sql, [stripped_name, stripped_name]).df()
 
@@ -1122,7 +1214,7 @@ def recent_denials(
             payment_date,
             billed_hours AS billed_hrs,
             paid_hours AS paid_hrs,
-            GREATEST(ROUND(COALESCE(billed_hours, 0) - COALESCE(paid_hours, 0), 1), 0) AS pending_hrs,
+            GREATEST(ROUND(COALESCE(billed_hours, 0) - GREATEST(0, COALESCE(paid_hours, 0)), 1), 0) AS pending_hrs,
             charge_amount AS billed_amt,
             payment_amount AS paid_amt,
             ROUND(charge_amount - payment_amount, 2) AS amt_delta,

@@ -35,14 +35,10 @@ class TestQueries:
             f"FAIL — all_reconciliation() for week 2026-02-18 returned {len(df)} rows, "
             "expected 147. "
             "This week's reconciliation row count has changed. "
-            "Possible causes:
-"
-            "  • New payroll or remittance data was ingested that adds/removes rows for this week
-"
-            "  • The name match mapping changed, affecting how many clients are matched
-"
-            "  • A reconciliation rebuild changed how rows are counted
-"
+            "Possible causes:\n"
+            "  • New payroll or remittance data was ingested that adds/removes rows for this week\n"
+            "  • The name match mapping changed, affecting how many clients are matched\n"
+            "  • A reconciliation rebuild changed how rows are counted\n"
             "NOTE: If a new file was intentionally ingested that changes this week's data, "
             "update the expected count in this test to match the new correct value. "
             "ACTION: Go to Weekly Reconciliation, filter to week 2026-02-18, and count the rows. "

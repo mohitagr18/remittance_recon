@@ -36,7 +36,8 @@ def rolling_trend_chart(df: pd.DataFrame) -> go.Figure:
     df["week"] = pd.to_datetime(df["week_start_date"]).dt.strftime("%b %d, %Y")
 
     # Determine pending hours (as negative value for shortfall representation)
-    pending_vals = -1.0 * df["pending_hrs"].abs()
+    pending_vals = df["pending_hrs"].fillna(0).clip(lower=0)
+    pending_vals = -1.0 * pending_vals
 
     from plotly.subplots import make_subplots
     fig = make_subplots(
@@ -179,27 +180,40 @@ def client_billed_paid_chart(df: pd.DataFrame) -> go.Figure:
     if df.empty:
         return _empty_fig("No payment history")
 
-    df = df.copy()
+    # Consolidate dataframe by date to prevent Plotly from incorrectly summing non-linear fragmented rows
+    group_col = "first_dos" if "first_dos" in df.columns else "week_start_date"
     
-    # Check if first_dos is available
-    if "first_dos" in df.columns:
-        # Convert first_dos to datetime to ensure correct date sorting
-        df["first_dos_dt"] = pd.to_datetime(df["first_dos"])
-        df = df.sort_values(by="first_dos_dt", ascending=True)
-        df["x_axis"] = df["first_dos_dt"].dt.strftime("%b %d, %Y")
-    else:
-        df = df.sort_values(by="week_start_date", ascending=True)
-        df["x_axis"] = pd.to_datetime(df["week_start_date"]).dt.strftime("%b %d")
-
-    # Determine pending hours (as negative value for shortfall representation)
+    agg_dict = {
+        "payroll_hours": "sum",
+        "billed_hours": "sum",
+        "paid_hours": "sum",
+    }
     if "pending_hours" in df.columns:
-        pending_vals = df["pending_hours"]
+        agg_dict["pending_hours"] = "sum"
     elif "pending_hrs" in df.columns:
-        pending_vals = df["pending_hrs"]
-    else:
-        pending_vals = df["billed_hours"] - df["paid_hours"]
+        agg_dict["pending_hrs"] = "sum"
+        
+    df = df.groupby(group_col).agg(agg_dict).reset_index()
+
+    # Now create the correct x_axis and sort
+    df["sort_dt"] = pd.to_datetime(df[group_col])
+    df = df.sort_values(by="sort_dt", ascending=True)
+    fmt = "%b %d, %Y" if group_col == "first_dos" else "%b %d"
+    df["x_axis"] = df["sort_dt"].dt.strftime(fmt)
+
+    # Recalculate pending correctly across the consolidated week
+    recalculated_pending = (df["payroll_hours"].fillna(0) - df["paid_hours"].fillna(0)).clip(lower=0)
     
-    pending_vals = -1.0 * pending_vals.abs()
+    # Use clip(upper=db_sum) against the database sum to ensure we respect manual overrides 
+    # (which force DB pending to 0, ensuring the final value drops to 0 if overridden)
+    if "pending_hours" in df.columns:
+        pending_vals = recalculated_pending.clip(upper=df["pending_hours"].fillna(0))
+    elif "pending_hrs" in df.columns:
+        pending_vals = recalculated_pending.clip(upper=df["pending_hrs"].fillna(0))
+    else:
+        pending_vals = recalculated_pending
+    
+    pending_vals = -1.0 * pending_vals
 
     from plotly.subplots import make_subplots
     fig = make_subplots(
